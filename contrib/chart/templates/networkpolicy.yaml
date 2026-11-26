@@ -177,6 +177,11 @@ spec:
             matchLabels:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "teamsbot") | nindent 14 }}
 {{- end }}
+{{- if .Values.zulipbot.enabled }}
+        - podSelector:
+            matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "zulipbot") | nindent 14 }}
+{{- end }}
         # Sandboxes reach authenticated api-rs routes through their paired
         # iron-proxy; sandbox pods never connect to api-rs directly.
         - podSelector:
@@ -364,6 +369,14 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+{{- if .Values.zulipbot.enabled }}
+    # The Zulip server, for the posts of the agent.
+    - ports:
+{{- range .Values.zulipbot.zulipPorts }}
+        - protocol: TCP
+          port: {{ . }}
+{{- end }}
+{{- end }}
     # Kubernetes API egress. The kubernetes.default ClusterIP (:443) is DNAT'd
     # to the real endpoint port (6443 on k3s/kubeadm); enforcing CNIs match
     # egress post-DNAT, so allow that port or api-rs can't manage sandboxes.

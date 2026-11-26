@@ -27,6 +27,13 @@ teamsbot:
   image:
     pullPolicy: IfNotPresent
 
+zulipbot:
+  # Enable the bot after you set ZULIP_API_KEY, zulipbot.site, zulipbot.email,
+  # and an allowlist.
+  enabled: false
+  image:
+    pullPolicy: IfNotPresent
+
 apiRs:
   image:
     pullPolicy: IfNotPresent

@@ -1086,6 +1086,55 @@ discordbot:
   extraEnv: {}
   resources: {}
 
+# The Zulip chat ingress (`centaur-zulipbot`). The bot reads a Zulip event
+# queue over outbound HTTPS and forwards mentions and direct messages to
+# api-rs. It is off by default. It needs a Zulip bot account and an allowlist.
+# The chart always runs exactly one replica. services/zulipbot/README.md
+# describes the bot.
+zulipbot:
+  enabled: false
+  image:
+    repository: centaur-zulipbot
+    tag: latest
+    pullPolicy: Always
+  port: 8080
+  # The organization URL, for example https://chat.example.com.
+  site: ""
+  # The email address of the bot account. The API key of the bot is
+  # ZULIP_API_KEY in the infra secret.
+  email: ""
+  # The channel IDs where the bot answers, or "*" for every channel. Commas or
+  # spaces separate the IDs. The bot subscribes to a channel when it is
+  # mentioned there. A private channel needs a grant for that. The bot is INERT
+  # until this list or the direct-message allowlist is set.
+  channelAllowlist: ""
+  # The user IDs that may send the bot direct messages, or "*" for every member.
+  directMessageAllowlist: ""
+  # The bot account IDs whose messages may start work.
+  triggerBotAllowlist: ""
+  # The guest account IDs whose messages may start work, or "*" for every
+  # guest.
+  guestAllowlist: ""
+  # The harnesses that an inline harness flag can select, or "*" for every
+  # harness. Commas separate the harness names, for example "codex,claudecode".
+  enabledHarnesses: "*"
+  # When an answer gets the model and harness line: first, always, or never.
+  # "first" shows it on the first answer of a conversation and after a
+  # harness, model, or provider flag.
+  responseMetadataMode: first
+  # The defaults of each channel, keyed by channel ID. Each value can name a
+  # persona, harness, model, provider, and reasoning effort in the vocabulary
+  # of the inline flags. The harness and the persona apply to new sessions.
+  #   channelDefaults:
+  #     "42": {persona: eng, harness: claude, model: opus, reasoning: high}
+  channelDefaults: {}
+  # The TCP ports of the Zulip server. A server inside the cluster can listen
+  # on another port.
+  zulipPorts:
+    - 443
+  extraEnv: {}
+  resources: {}
+
 # Microsoft Teams chat ingress. Forwards Teams Bot Framework activities to the
 # api-rs control plane (:8080) and renders session events back to Teams. Off by
 # default; needs a Teams app registration and Bot Framework endpoint routing.

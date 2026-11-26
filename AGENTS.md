@@ -69,8 +69,10 @@ Ownership by tree:
   `services/<name>/` directory holds the Dockerfile and docs. Run `cargo` from
   the repository root.
 - `services/slackbotv2/`, `discordbot/`, `githubbot/`, `linearbot/`,
-  `teamsbot/`: platform transport, policy gates, session forwarding, and
-  platform rendering.
+  `teamsbot/`, `zulipbot/`: platform transport, policy gates, session
+  forwarding, and platform rendering. Zulipbot is a Rust service in
+  `crates/centaur-zulipbot`, with its Zulip API client in `crates/centaur-zulip`.
+  The other chat services are TypeScript.
 - `services/sandbox/`: agent image, startup composition, tool installation,
   repo-cache helpers, and runtime prompt. Harness protocol normalization lives
   in `crates/harness-server/`, which is built into the image.

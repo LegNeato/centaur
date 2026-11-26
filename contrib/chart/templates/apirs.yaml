@@ -198,6 +198,7 @@ spec:
   (dict "enabled" .Values.githubbot.enabled "key" "GITHUBBOT_API_KEY")
   (dict "enabled" .Values.linearbot.enabled "key" "LINEARBOT_API_KEY")
   (dict "enabled" .Values.teamsbot.enabled "key" "TEAMSBOT_API_KEY")
+  (dict "enabled" .Values.zulipbot.enabled "key" "ZULIPBOT_API_KEY")
 }}
 {{- if $ingress.enabled }}
             - name: {{ $ingress.key }}
@@ -206,6 +207,19 @@ spec:
                   name: {{ include "centaur.secretEnvName" $ }}
                   key: {{ printf "%s%s" $.Values.secretManager.envPrefix $ingress.key }}
 {{- end }}
+{{- end }}
+{{- if .Values.zulipbot.enabled }}
+            # The agent posts files and messages to its Zulip conversation
+            # through api-rs, as the Zulip bot.
+            - name: ZULIP_SITE
+              value: {{ .Values.zulipbot.site | quote }}
+            - name: ZULIP_EMAIL
+              value: {{ .Values.zulipbot.email | quote }}
+            - name: ZULIP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "centaur.secretEnvName" . }}
+                  key: {{ printf "%sZULIP_API_KEY" .Values.secretManager.envPrefix }}
 {{- end }}
             - name: BIND_ADDR
               value: {{ printf "0.0.0.0:%v" .Values.apiRs.port | quote }}

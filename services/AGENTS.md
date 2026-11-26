@@ -45,6 +45,12 @@ Tests should cover signature/auth rejection, self-message loops, duplicate
 deliveries, session API failures, replay/reconnect behavior, and terminal render
 outcomes where applicable.
 
+Zulipbot is the Rust chat ingress. Its code is in `crates/centaur-zulipbot`. It
+shares the session API contract with api-rs through `centaur-session-core` and
+`centaur-session-client`. The Zulip API client is in `crates/centaur-zulip`.
+api-rs uses the same client for the posts of the `zulip` connector. Its tests replace Zulip and the session API with
+in-memory fakes behind traits.
+
 All TypeScript services belong to the root pnpm workspace. Install dependencies
 once from the repository root with `pnpm install --frozen-lockfile`; their
 scripts invoke Bun for runtime, tests, and type checking. Do not create nested

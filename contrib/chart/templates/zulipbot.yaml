@@ -1,0 +1,156 @@
+{{- if .Values.zulipbot.enabled }}
+{{- $name := include "centaur.componentName" (dict "root" . "component" "zulipbot") }}
+{{- $apiRsName := include "centaur.componentName" (dict "root" . "component" "api-rs") }}
+{{- $secretEnv := include "centaur.secretEnvName" . }}
+{{- $prefix := .Values.secretManager.envPrefix }}
+{{- $zulipbot := .Values.zulipbot }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "zulipbot") | nindent 4 }}
+spec:
+  # Run exactly one replica. Each replica registers its own Zulip event queue
+  # and answers every message. Recreate stops the old pod before the new pod
+  # registers. Do NOT add an HPA.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "zulipbot") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/infra-secrets: {{ include "centaur.infraSecretsChecksum" . }}
+      labels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "zulipbot") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # The bot waits up to 20 seconds for running handlers. The next pod
+      # resumes every answer that is still pending.
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: zulipbot
+          image: {{ printf "%s:%s" $zulipbot.image.repository $zulipbot.image.tag | quote }}
+          imagePullPolicy: {{ $zulipbot.image.pullPolicy }}
+          env:
+            - name: BIND_ADDR
+              value: {{ printf "0.0.0.0:%v" $zulipbot.port | quote }}
+            - name: CENTAUR_API_URL
+              value: {{ printf "http://%s:%v" $apiRsName .Values.apiRs.port | quote }}
+            - name: ZULIPBOT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sZULIPBOT_API_KEY" $prefix }}
+            - name: ZULIP_SITE
+              value: {{ required "zulipbot.site is required when zulipbot.enabled=true" $zulipbot.site | quote }}
+            - name: ZULIP_EMAIL
+              value: {{ required "zulipbot.email is required when zulipbot.enabled=true" $zulipbot.email | quote }}
+            - name: ZULIP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sZULIP_API_KEY" $prefix }}
+            - name: ZULIPBOT_HARNESS
+              value: {{ .Values.sandbox.harnessEngine | quote }}
+            - name: ZULIPBOT_CHANNEL_ALLOWLIST
+              value: {{ $zulipbot.channelAllowlist | quote }}
+            - name: ZULIPBOT_DIRECT_MESSAGE_ALLOWLIST
+              value: {{ $zulipbot.directMessageAllowlist | quote }}
+            - name: ZULIPBOT_TRIGGER_BOT_ALLOWLIST
+              value: {{ $zulipbot.triggerBotAllowlist | quote }}
+            - name: ZULIPBOT_GUEST_ALLOWLIST
+              value: {{ $zulipbot.guestAllowlist | quote }}
+            - name: ZULIPBOT_ENABLED_HARNESSES
+              value: {{ $zulipbot.enabledHarnesses | quote }}
+            - name: ZULIPBOT_RESPONSE_METADATA_MODE
+              value: {{ $zulipbot.responseMetadataMode | quote }}
+{{- if $zulipbot.channelDefaults }}
+            - name: ZULIPBOT_CHANNEL_DEFAULTS
+              value: {{ $zulipbot.channelDefaults | toJson | quote }}
+{{- end }}
+{{- if .Values.codex.customProviders }}
+            - name: CODEX_CUSTOM_PROVIDERS
+              value: {{ .Values.codex.customProviders | toJson | quote }}
+{{- end }}
+{{- range $name := tuple "CLAUDE_MODEL" "CODEX_MODEL" "CODEX_MODEL_REASONING_EFFORT" "CENTAUR_PI_MODEL" "CENTAUR_OMP_MODEL" }}
+{{- if and (hasKey $.Values.sandbox.extraEnv $name) (not (hasKey $zulipbot.extraEnv $name)) }}
+            # The metadata line names the model that the sandboxes run.
+            - name: {{ $name }}
+              value: {{ index $.Values.sandbox.extraEnv $name | toString | quote }}
+{{- end }}
+{{- end }}
+            - name: RUST_LOG
+              value: info
+{{- range $name, $value := $zulipbot.extraEnv }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+{{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $zulipbot.port }}
+          # /healthz returns 200 after the first queue registration. The probe
+          # allows two minutes for a slow Zulip server at startup.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+          resources:
+{{ toYaml $zulipbot.resources | nindent 12 }}
+          securityContext:
+{{ toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsNonRoot: true
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "zulipbot") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "zulipbot") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  # The pod serves only /healthz. The event queue uses outbound requests.
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ $zulipbot.port }}
+  egress:
+{{- if .Values.apiRs.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "api-rs") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.apiRs.port }}
+{{- end }}
+    # The Zulip server. Another policy allows DNS for every pod.
+    - ports:
+{{- range $zulipbot.zulipPorts }}
+        - protocol: TCP
+          port: {{ . }}
+{{- end }}
+{{- end }}
+{{- end }}

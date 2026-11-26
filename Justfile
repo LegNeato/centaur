@@ -35,7 +35,7 @@ build:
       just _build-all-sequential
     else
       pids=()
-      for recipe in _build-api-rs _build-company-context _build-proxy-sync _build-codemode _build-token-broker _build-brain _build-iron-proxy _build-slackbotv2 _build-linearbot _build-discordbot _build-githubbot _build-teamsbot _build-agent; do
+      for recipe in _build-api-rs _build-company-context _build-proxy-sync _build-codemode _build-token-broker _build-brain _build-iron-proxy _build-slackbotv2 _build-linearbot _build-discordbot _build-githubbot _build-teamsbot _build-zulipbot _build-agent; do
         just "$recipe" &
         pids+=("$!")
       done
@@ -59,6 +59,7 @@ _build-all-sequential:
     just _build-discordbot
     just _build-githubbot
     just _build-teamsbot
+    just _build-zulipbot
     just _build-agent
 
 build-one service:
@@ -77,6 +78,7 @@ build-one service:
       discordbot) just _build-discordbot ;;
       githubbot) just _build-githubbot ;;
       teamsbot) just _build-teamsbot ;;
+      zulipbot) just _build-zulipbot ;;
       agent|sandbox) just _build-agent ;;
       workflow-python) just _build-workflow-python ;;
       *) echo "unknown service: {{service}}" >&2; exit 2 ;;
@@ -118,6 +120,9 @@ _build-githubbot:
 _build-teamsbot:
     {{docker_build}} -t centaur-teamsbot:latest -f services/teamsbot/Dockerfile .
 
+_build-zulipbot:
+    {{docker_build}} -t centaur-zulipbot:latest -f services/zulipbot/Dockerfile .
+
 _build-agent:
     {{docker_build}} --target "{{agent_build_target}}" -t "{{agent_image}}" -f "{{agent_dockerfile}}" .
 
@@ -131,7 +136,7 @@ _build-workflow-python:
 _push-registry:
     #!/usr/bin/env bash
     set -euo pipefail
-    for img in centaur-api-rs centaur-company-context centaur-proxy-sync centaur-codemode centaur-token-broker centaur-brain centaur-iron-proxy centaur-slackbotv2 centaur-linearbot centaur-discordbot centaur-githubbot centaur-teamsbot centaur-agent; do
+    for img in centaur-api-rs centaur-company-context centaur-proxy-sync centaur-codemode centaur-token-broker centaur-brain centaur-iron-proxy centaur-slackbotv2 centaur-linearbot centaur-discordbot centaur-githubbot centaur-teamsbot centaur-zulipbot centaur-agent; do
       target="{{registry}}/library/${img}:latest"
       echo "pushing ${img}:latest -> ${target}..."
       docker tag "${img}:latest" "${target}"
@@ -144,7 +149,7 @@ _push-registry:
 _import-k3s:
     #!/usr/bin/env bash
     set -euo pipefail
-    for img in centaur-api-rs centaur-company-context centaur-proxy-sync centaur-codemode centaur-token-broker centaur-brain centaur-iron-proxy centaur-slackbotv2 centaur-linearbot centaur-discordbot centaur-githubbot centaur-teamsbot centaur-agent; do
+    for img in centaur-api-rs centaur-company-context centaur-proxy-sync centaur-codemode centaur-token-broker centaur-brain centaur-iron-proxy centaur-slackbotv2 centaur-linearbot centaur-discordbot centaur-githubbot centaur-teamsbot centaur-zulipbot centaur-agent; do
       echo "importing ${img}:latest into k3s containerd..."
       docker save "${img}:latest" | {{k3s_ctr}} images import -
     done
@@ -193,6 +198,7 @@ deploy:
           --set discordbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-discordbot
           --set githubbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-githubbot
           --set teamsbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-teamsbot
+          --set zulipbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-zulipbot
           --set sandbox.image.repository=ghcr.io/paradigmxyz/centaur/centaur-agent
         )
         ;;

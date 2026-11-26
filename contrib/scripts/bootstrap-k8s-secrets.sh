@@ -69,6 +69,16 @@ Optional Teams ingress bootstrap (consumed when teamsbot.enabled=true):
   TEAMSBOT_API_KEY             bearer the bot sends to api-rs; auto-generated
                                once when absent (never rotated in place)
 
+Optional Zulip ingress bootstrap (consumed when zulipbot.enabled=true):
+  ZULIP_API_KEY                the API key of the Zulip bot account. The script
+                               seeds the zulipbot keys when it is set. Each run
+                               overwrites it. A new value therefore rotates the
+                               key.
+                               The site and the bot email are the chart values
+                               zulipbot.site and zulipbot.email.
+  ZULIPBOT_API_KEY             bearer the bot sends to api-rs; auto-generated
+                               once when absent (never rotated in place)
+
 Console bootstrap:
   IRON_CONTROL_DATABASE_URL    overrides the derived DSN (default points at the
                                bundled Postgres server with no database path;
@@ -227,6 +237,15 @@ if secret_exists centaur-infra-env; then
       patch_data+=("\"TEAMSBOT_API_KEY\":\"$(printf '%s' "${TEAMSBOT_API_KEY:-$(rand_hex)}" | base64 | tr -d '\n')\"")
     fi
   fi
+  # The Zulip ingress keys. The script adds them when ZULIP_API_KEY is set.
+  # Each run overwrites ZULIP_API_KEY. The script generates ZULIPBOT_API_KEY
+  # once when it is absent.
+  if [[ -n "${ZULIP_API_KEY:-}" ]]; then
+    patch_data+=("\"ZULIP_API_KEY\":\"$(printf '%s' "$ZULIP_API_KEY" | base64 | tr -d '\n')\"")
+    if ! secret_key_present ZULIPBOT_API_KEY; then
+      patch_data+=("\"ZULIPBOT_API_KEY\":\"$(printf '%s' "${ZULIPBOT_API_KEY:-$(rand_hex)}" | base64 | tr -d '\n')\"")
+    fi
+  fi
   # iron-control keys: top up only when absent so we never rotate them out from
   # under a running pod (the Console's encrypted records would become
   # undecryptable). Generated values mirror the create path.
@@ -331,6 +350,12 @@ else
       --from-literal=TEAMS_BOT_APP_PASSWORD="$TEAMS_BOT_APP_PASSWORD"
       --from-literal=TEAMS_BOT_APP_TENANT_ID="$TEAMS_BOT_APP_TENANT_ID"
       --from-literal=TEAMSBOT_API_KEY="${TEAMSBOT_API_KEY:-$(rand_hex)}"
+    )
+  fi
+  if [[ -n "${ZULIP_API_KEY:-}" ]]; then
+    secret_args+=(
+      --from-literal=ZULIP_API_KEY="$ZULIP_API_KEY"
+      --from-literal=ZULIPBOT_API_KEY="${ZULIPBOT_API_KEY:-$(rand_hex)}"
     )
   fi
   if [[ -n "${OP_CONNECT_TOKEN:-}" ]]; then

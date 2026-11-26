@@ -53,6 +53,8 @@ Optional required-by-mode variables:
 | `OP_CONNECT_TOKEN` | Secret or local bootstrap shell env. | Token used by iron-proxy when `ironProxy.secretSource=onepassword-connect`. |
 | `TEAMS_BOT_APP_ID`, `TEAMS_BOT_APP_PASSWORD`, `TEAMS_BOT_APP_TENANT_ID` | Local shell before `just bootstrap-secrets`; production Secret. | Required by Teamsbot when `teamsbot.enabled=true`. |
 | `TEAMSBOT_API_KEY` | `secretManager.existingSecretName`; local bootstrap generates it when Teams credentials are present and it is omitted. | Static API key used by Teamsbot. |
+| `ZULIP_API_KEY` | Local shell before `just bootstrap-secrets`; production Secret. | The API key of the Zulip bot account. Zulipbot needs it when `zulipbot.enabled=true`. |
+| `ZULIPBOT_API_KEY` | `secretManager.existingSecretName`; local bootstrap generates it when `ZULIP_API_KEY` is present and it is omitted. | The static API key of Zulipbot. api-rs limits the key to `zulip:` sessions. |
 | `CENTAUR_APIRS_ADMIN_API_KEY` | `secretManager.existingSecretName` or the api-rs environment. | Optional static bearer token with every api-rs capability. Generate a distinct value with `openssl rand -hex 32`. |
 
 ## Console and Permission Control Plane
@@ -174,6 +176,31 @@ per-execution idle timeout; deletion is controlled by sandbox max lifetime.
 | `TEAMS_DOWNLOAD_ATTACHMENTS` | `teamsbot.downloadAttachments`. | Enables allowed Teams attachment downloads into base64 payloads; defaults to `false`. |
 | `TEAMS_ATTACHMENT_MAX_BYTES`, `TEAMS_ATTACHMENT_ALLOWED_HOSTS` | Runtime env. | Attachment download size cap and HTTPS host allowlist. |
 | `TEAMS_GRAPH_BEARER_TOKEN`, `TEAMS_GRAPH_TOKEN_SCOPE` | Runtime env or Secret. | Optional Graph auth fallback for Graph/SharePoint-backed attachment URLs. |
+
+## Zulipbot
+
+`services/zulipbot/README.md` describes the behavior and the Zulip setup.
+
+| Env var | Set from | Controls |
+| --- | --- | --- |
+| `ZULIP_SITE`, `ZULIP_EMAIL` | `zulipbot.site`, `zulipbot.email`. | The Zulip organization URL and the email address of the bot. Both are required when `zulipbot.enabled=true`. The chart also sets them on api-rs for the `zulip` connector. |
+| `ZULIP_API_KEY` | Secret. | The API key of the bot. Zulipbot and api-rs read it. |
+| `CENTAUR_API_URL` | Chart-rendered API service URL. | The base URL of api-rs. The local default is `http://127.0.0.1:8080`. |
+| `ZULIPBOT_API_KEY` | `secretManager.existingSecretName`. | The dedicated key that Zulipbot sends to api-rs. |
+| `ZULIPBOT_CHANNEL_ALLOWLIST` | `zulipbot.channelAllowlist`. | The channel IDs where the bot answers, or `*` for every channel. An empty list allows no channel. |
+| `ZULIPBOT_DIRECT_MESSAGE_ALLOWLIST` | `zulipbot.directMessageAllowlist`. | The user IDs that may send the bot direct messages, or `*` for every member. An empty list allows no user. |
+| `ZULIPBOT_TRIGGER_BOT_ALLOWLIST` | `zulipbot.triggerBotAllowlist`. | The bot account IDs whose messages may start work. An empty list allows no bot. |
+| `ZULIPBOT_GUEST_ALLOWLIST` | `zulipbot.guestAllowlist`. | The guest account IDs whose messages may start work, or `*` for every guest. An empty list allows no guest. |
+| `ZULIPBOT_HARNESS` | `sandbox.harnessEngine`. | The harness that new Zulip sessions run. |
+| `ZULIPBOT_ENABLED_HARNESSES` | `zulipbot.enabledHarnesses`. | The harnesses that a harness flag can select. The default is `*`. |
+| `ZULIPBOT_CHANNEL_DEFAULTS` | `zulipbot.channelDefaults`. | The persona, harness, model, provider, and reasoning defaults of each channel, keyed by channel ID. A default harness must be enabled or be `ZULIPBOT_HARNESS`. |
+| `ZULIPBOT_RESPONSE_METADATA_MODE` | `zulipbot.responseMetadataMode`. | When an answer gets the model and harness line: `first`, `always`, or `never`. The default is `first`. |
+| `CODEX_CUSTOM_PROVIDERS` | `codex.customProviders`. | The custom provider catalog that `--model` and `--provider` resolve against. |
+| `ZULIPBOT_CONTEXT_MESSAGES` | Runtime env. | The maximum number of earlier messages that one turn reads. The default is `50`. |
+| `ZULIPBOT_RECOVERY_WINDOW_SECONDS` | Runtime env. | The age limit of the messages that the startup scan handles. The default is `3600`. |
+| `ZULIPBOT_TURN_FILE_BYTES` | Runtime env. | The maximum total size of the files that one turn attaches. The default is `26214400` (25 MiB). |
+| `SESSION_IDLE_TIMEOUT_MS`, `SESSION_MAX_DURATION_MS` | Runtime env. | The execution limits that the bot sends to api-rs. |
+| `BIND_ADDR` | Chart. | The address of the health endpoint. The chart uses `0.0.0.0:8080`. |
 
 ## Sandbox
 
