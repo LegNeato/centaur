@@ -14,6 +14,7 @@ from centaur_sdk import (
     current_session_context,
     current_slack_thread,
     current_thread_key,
+    current_zulip_thread,
     reset_tool_context,
     sandbox_context,
     sandbox_thread_key,
@@ -497,3 +498,62 @@ async def test_get_sync_uses_background_thread_inside_running_loop():
     assert backend.get_sync("TOKEN") == "inside-loop"
     assert len(backend.get_thread_ids) == 1
     assert backend.get_thread_ids[0] != caller_thread_id
+
+
+def _zulip_context(thread_key: str, zulip: bytes, monkeypatch: pytest.MonkeyPatch):
+    payload = (
+        b'{"thread_key":"' + thread_key.encode() + b'","platform":"zulip","zulip":' + zulip + b"}"
+    )
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return _fake_context_response(payload)()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    token = set_tool_context(
+        ToolContext(
+            name="fake-tool",
+            thread_key=thread_key,
+            secrets={"CENTAUR_API_URL": "http://api:8000"},
+        )
+    )
+    return token, requests
+
+
+def test_current_zulip_thread_returns_the_channel_topic(monkeypatch: pytest.MonkeyPatch):
+    token, _ = _zulip_context(
+        "zulip:channel:42:deploys",
+        b'{"kind":"topic","channel_id":42,"topic":"deploys"}',
+        monkeypatch,
+    )
+    try:
+        assert current_zulip_thread() == {"kind": "topic", "channel_id": 42, "topic": "deploys"}
+    finally:
+        reset_tool_context(token)
+
+
+def test_current_chat_destination_tags_zulip_direct_messages_with_one_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token, requests = _zulip_context(
+        "zulip:dm:7,9", b'{"kind":"direct","user_ids":[7,9]}', monkeypatch
+    )
+    try:
+        assert current_chat_destination() == {
+            "platform": "zulip",
+            "kind": "direct",
+            "user_ids": [7, 9],
+        }
+        assert len(requests) == 1
+    finally:
+        reset_tool_context(token)
+
+
+def test_current_zulip_thread_rejects_other_platforms(monkeypatch: pytest.MonkeyPatch):
+    token = _discord_context("discord:111:222:333", monkeypatch)
+    try:
+        with pytest.raises(RuntimeError, match="not a Zulip thread"):
+            current_zulip_thread()
+    finally:
+        reset_tool_context(token)

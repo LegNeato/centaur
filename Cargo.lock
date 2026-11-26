@@ -748,6 +748,7 @@ dependencies = [
  "base64 0.23.1",
  "centaur-console-db",
  "centaur-iron-proxy",
+ "centaur-session-core",
  "getrandom 0.3.4",
  "hex",
  "serde",

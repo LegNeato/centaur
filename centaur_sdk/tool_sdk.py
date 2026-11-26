@@ -10,6 +10,7 @@ import mimetypes
 import os
 import urllib.request
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -153,14 +154,7 @@ def current_session_context() -> dict[str, Any]:
 
 def current_slack_thread() -> dict[str, str]:
     """Return ``{"channel_id": ..., "thread_ts": ...}`` for the current Slack thread."""
-    context = current_session_context()
-    slack = context.get("slack")
-    if not isinstance(slack, dict) or not slack.get("channel_id") or not slack.get("thread_ts"):
-        raise RuntimeError(f"current thread is not a Slack thread: {context.get('thread_key')!r}")
-    return {
-        "channel_id": str(slack["channel_id"]),
-        "thread_ts": str(slack["thread_ts"]),
-    }
+    return _slack_destination(current_session_context())
 
 
 def current_discord_thread() -> dict[str, str]:
@@ -170,7 +164,73 @@ def current_discord_thread() -> dict[str, str]:
     omitted for a channel-root message). Raises if the current thread is not a
     Discord thread.
     """
+    return _discord_destination(current_session_context())
+
+
+def current_linear_thread() -> dict[str, str]:
+    """Return the current Linear destination.
+
+    ``{"issue_id": ..., "comment_id": ..., "agent_session_id": ...}`` (the
+    optional comment/session ids are omitted when absent). Raises if the current
+    thread is not a Linear thread.
+    """
+    return _linear_destination(current_session_context())
+
+
+def current_github_thread() -> dict[str, str | int]:
+    """Return the current GitHub destination.
+
+    ``{"owner": ..., "repo": ..., "number": ..., "kind": ..., "review_comment_id": ...}``
+    where ``kind`` is ``"issue"`` or ``"pr"`` and the optional
+    ``review_comment_id`` is omitted when the turn is not pinned to a PR
+    review-comment thread. Raises if the current thread is not a GitHub thread.
+    """
+    return _github_destination(current_session_context())
+
+
+def current_zulip_thread() -> dict[str, Any]:
+    """Return the current Zulip conversation.
+
+    A channel topic is ``{"kind": "topic", "channel_id": ..., "topic": ...}``.
+    The ``topic`` value is lowercase because Zulip compares topic names
+    without regard to case. A direct-message conversation is
+    ``{"kind": "direct", "user_ids": [...]}``. The ``user_ids`` list holds the
+    participants other than the bot. The function raises an error when the
+    current thread is not a Zulip thread.
+    """
+    return _zulip_destination(current_session_context())
+
+
+def current_chat_destination() -> dict[str, Any]:
+    """Return the current chat surface in a form that suits every platform.
+
+    The result holds ``platform`` and the fields of the platform's own helper.
+    ``platform`` is ``"slack"``, ``"discord"``, ``"linear"``, ``"github"``, or
+    ``"zulip"``. Tools that must work on every chat surface should use this
+    function instead of the platform helpers. The function raises an error
+    when the current thread is not a known chat surface.
+    """
     context = current_session_context()
+    platform = context.get("platform")
+    destination = _DESTINATION_READERS.get(platform) if isinstance(platform, str) else None
+    if destination is None:
+        raise RuntimeError(
+            f"current thread is not a recognized chat surface: {context.get('thread_key')!r}"
+        )
+    return {"platform": platform, **destination(context)}
+
+
+def _slack_destination(context: dict[str, Any]) -> dict[str, str]:
+    slack = context.get("slack")
+    if not isinstance(slack, dict) or not slack.get("channel_id") or not slack.get("thread_ts"):
+        raise RuntimeError(f"current thread is not a Slack thread: {context.get('thread_key')!r}")
+    return {
+        "channel_id": str(slack["channel_id"]),
+        "thread_ts": str(slack["thread_ts"]),
+    }
+
+
+def _discord_destination(context: dict[str, Any]) -> dict[str, str]:
     discord = context.get("discord")
     if (
         not isinstance(discord, dict)
@@ -187,14 +247,7 @@ def current_discord_thread() -> dict[str, str]:
     return destination
 
 
-def current_linear_thread() -> dict[str, str]:
-    """Return the current Linear destination.
-
-    ``{"issue_id": ..., "comment_id": ..., "agent_session_id": ...}`` (the
-    optional comment/session ids are omitted when absent). Raises if the current
-    thread is not a Linear thread.
-    """
-    context = current_session_context()
+def _linear_destination(context: dict[str, Any]) -> dict[str, str]:
     linear = context.get("linear")
     if not isinstance(linear, dict) or not linear.get("issue_id"):
         raise RuntimeError(f"current thread is not a Linear thread: {context.get('thread_key')!r}")
@@ -206,15 +259,7 @@ def current_linear_thread() -> dict[str, str]:
     return destination
 
 
-def current_github_thread() -> dict[str, str | int]:
-    """Return the current GitHub destination.
-
-    ``{"owner": ..., "repo": ..., "number": ..., "kind": ..., "review_comment_id": ...}``
-    where ``kind`` is ``"issue"`` or ``"pr"`` and the optional
-    ``review_comment_id`` is omitted when the turn is not pinned to a PR
-    review-comment thread. Raises if the current thread is not a GitHub thread.
-    """
-    context = current_session_context()
+def _github_destination(context: dict[str, Any]) -> dict[str, str | int]:
     github = context.get("github")
     if (
         not isinstance(github, dict)
@@ -234,31 +279,26 @@ def current_github_thread() -> dict[str, str | int]:
     return destination
 
 
-def current_chat_destination() -> dict[str, str | int]:
-    """Return the current chat surface in a platform-agnostic shape.
+def _zulip_destination(context: dict[str, Any]) -> dict[str, Any]:
+    zulip = context.get("zulip")
+    if isinstance(zulip, dict) and zulip.get("kind") == "topic" and "channel_id" in zulip:
+        return {
+            "kind": "topic",
+            "channel_id": int(zulip["channel_id"]),
+            "topic": str(zulip.get("topic") or ""),
+        }
+    if isinstance(zulip, dict) and zulip.get("kind") == "direct" and zulip.get("user_ids"):
+        return {"kind": "direct", "user_ids": [int(user_id) for user_id in zulip["user_ids"]]}
+    raise RuntimeError(f"current thread is not a Zulip thread: {context.get('thread_key')!r}")
 
-    Always includes ``platform`` (``"slack"`` / ``"discord"`` / ``"linear"`` /
-    ``"github"``) plus that platform's destination ids (Slack:
-    ``channel_id``/``thread_ts``; Discord: ``guild_id``/``channel_id``/``thread_id``;
-    Linear: ``issue_id``/``comment_id``/``agent_session_id``; GitHub:
-    ``owner``/``repo``/``number``/``kind``/``review_comment_id``). Prefer this
-    over the platform-specific helpers when writing tooling that should work on
-    any chat surface. Raises if the current thread is not a recognized chat
-    surface.
-    """
-    context = current_session_context()
-    platform = context.get("platform")
-    if platform == "slack":
-        return {"platform": "slack", **current_slack_thread()}
-    if platform == "discord":
-        return {"platform": "discord", **current_discord_thread()}
-    if platform == "linear":
-        return {"platform": "linear", **current_linear_thread()}
-    if platform == "github":
-        return {"platform": "github", **current_github_thread()}
-    raise RuntimeError(
-        f"current thread is not a recognized chat surface: {context.get('thread_key')!r}"
-    )
+
+_DESTINATION_READERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "slack": _slack_destination,
+    "discord": _discord_destination,
+    "linear": _linear_destination,
+    "github": _github_destination,
+    "zulip": _zulip_destination,
+}
 
 
 def _sandbox_uploads_dir() -> Path | None:

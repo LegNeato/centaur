@@ -659,6 +659,12 @@ const INGRESS_SPECS: &[IngressSpec] = &[
         platform_prefixes: &["teams:"],
         workflow_events: false,
     },
+    IngressSpec {
+        env_var: "ZULIPBOT_API_KEY",
+        identity: "zulipbot",
+        platform_prefixes: &["zulip:"],
+        workflow_events: false,
+    },
 ];
 
 struct IngressSpec {
@@ -723,6 +729,8 @@ mod tests {
     use axum::http::{HeaderMap, header};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use serde_json::json;
+
+    use centaur_session_core::destination::{ZulipDestination, ZulipDirect, ZulipTopic};
 
     use super::*;
     use crate::routes::thread_key_matches_platform;
@@ -883,6 +891,31 @@ mod tests {
         for thread_key in ["slack:C123:1.2", "githubx:acme/repo:7"] {
             assert!(
                 !thread_key_matches_platform(githubbot.platform_prefixes, thread_key),
+                "{thread_key}"
+            );
+        }
+    }
+
+    #[test]
+    fn zulipbot_ingress_admits_the_keys_zulip_destinations_mint() {
+        let zulipbot = INGRESS_SPECS
+            .iter()
+            .find(|spec| spec.identity == "zulipbot")
+            .expect("zulipbot ingress spec");
+
+        for destination in [
+            ZulipDestination::Topic(ZulipTopic::new(42, "deploys")),
+            ZulipDestination::Direct(ZulipDirect::new([7, 9]).unwrap()),
+        ] {
+            let thread_key = destination.thread_key().unwrap();
+            assert!(
+                thread_key_matches_platform(zulipbot.platform_prefixes, thread_key.as_str()),
+                "{thread_key}"
+            );
+        }
+        for thread_key in ["slack:C123:1.2", "discord:1:2"] {
+            assert!(
+                !thread_key_matches_platform(zulipbot.platform_prefixes, thread_key),
                 "{thread_key}"
             );
         }

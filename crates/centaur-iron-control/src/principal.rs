@@ -3,8 +3,10 @@
 //! A principal is the identity that holds roles and owns proxies. For Centaur
 //! the principal is the conversation: a Discord **channel** (every thread in it
 //! shares one principal), a Linear **issue** (every agent session on it shares
-//! one principal), a Microsoft Teams **channel/conversation** (or **user** for
-//! a personal/user-scoped run when the acting user is known), or — for Slack —
+//! one principal), a Zulip **channel** (every topic in it shares one principal),
+//! a Zulip **user** for a one-to-one direct message, a Microsoft Teams
+//! **channel/conversation** (or **user** for a personal/user-scoped run when
+//! the acting user is known), or — for Slack —
 //! a **user** for a 1:1 DM and a **channel** for a multi-party channel/group
 //! thread. The Slack thread key is
 //! ``<source>:[<team_id>:]<conversation_id>[:<thread_ts>]`` — segments are
@@ -23,6 +25,10 @@ use std::collections::BTreeMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use centaur_session_core::{
+    ThreadKey,
+    destination::{ChatDestination, ZulipDestination},
+};
 use thiserror::Error;
 
 use crate::models::PrincipalInput;
@@ -41,6 +47,9 @@ const GITHUB_THREAD_PREFIXES: &[&str] = &[
 const LINEAR_ISSUE_KIND: &str = "linear_issue";
 const TEAMS_USER_KIND: &str = "teams_user";
 const TEAMS_CONVERSATION_KIND: &str = "teams_conversation";
+const ZULIP_CHANNEL_KIND: &str = "zulip_channel";
+const ZULIP_USER_KIND: &str = "zulip_user";
+const ZULIP_GROUP_DM_KIND: &str = "zulip_group_dm";
 
 /// The principal a session resolves to, as a stable upsert key plus identity
 /// fields and extensible labels.
@@ -165,6 +174,10 @@ pub fn derive_principal_with_slack_team(
         });
     }
 
+    if let Some(destination) = zulip_destination(thread_key) {
+        return Ok(zulip_principal(&destination, display_name));
+    }
+
     if let Some((conversation_id, service_url, thread_id)) =
         parse_teams_adapter_segments(thread_key)
     {
@@ -257,6 +270,77 @@ pub fn derive_principal_with_slack_team(
         slack_team_id: None,
         labels: BTreeMap::new(),
     })
+}
+
+fn zulip_destination(thread_key: &str) -> Option<ZulipDestination> {
+    match ThreadKey::parse(thread_key).ok()?.chat_destination()? {
+        ChatDestination::Zulip(destination) => Some(destination),
+        _ => None,
+    }
+}
+
+/// Returns the principal of a Zulip conversation. Every topic of a channel
+/// shares the principal of the channel. A one-to-one direct message gets the
+/// principal of the other user. A group direct message gets a principal for
+/// its set of participants. ``display_name`` is the channel name or the
+/// participant names from the Zulip ingress.
+fn zulip_principal(destination: &ZulipDestination, display_name: Option<&str>) -> PrincipalRef {
+    let mut labels = BTreeMap::new();
+    let (foreign_id, name, kind) = match destination {
+        ZulipDestination::Topic(topic) => {
+            let channel_id = topic.channel_id();
+            labels.insert("zulip_channel_id".to_owned(), channel_id.to_string());
+            (
+                format!("zulip-channel-{channel_id}"),
+                display_name
+                    .map(|name| format!("Zulip Channel #{name}"))
+                    .unwrap_or_else(|| format!("Zulip Channel {channel_id}")),
+                ZULIP_CHANNEL_KIND,
+            )
+        }
+        ZulipDestination::Direct(direct) => {
+            let user_ids = direct.user_ids();
+            let mut participants = user_ids.iter();
+            match (participants.next(), participants.next()) {
+                (Some(user_id), None) => {
+                    labels.insert("zulip_user_id".to_owned(), user_id.to_string());
+                    (
+                        format!("zulip-user-{user_id}"),
+                        display_name
+                            .map(|name| format!("Zulip User @{name}"))
+                            .unwrap_or_else(|| format!("Zulip User {user_id}")),
+                        ZULIP_USER_KIND,
+                    )
+                }
+                _ => {
+                    let joined = |separator: &str| {
+                        user_ids
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join(separator)
+                    };
+                    labels.insert("zulip_user_ids".to_owned(), joined(","));
+                    (
+                        format!("zulip-dm-{}", joined("-")),
+                        display_name
+                            .map(|name| format!("Zulip Group DM {name}"))
+                            .unwrap_or_else(|| format!("Zulip Group DM {}", joined(", "))),
+                        ZULIP_GROUP_DM_KIND,
+                    )
+                }
+            }
+        }
+    };
+    PrincipalRef {
+        foreign_id,
+        name,
+        kind: Some(kind.to_owned()),
+        slack_user_id: None,
+        slack_channel_id: None,
+        slack_team_id: None,
+        labels,
+    }
 }
 
 /// Resolve the requesting user's principal for a Slack channel thread. This is
@@ -681,6 +765,51 @@ mod tests {
     fn linear_issue_level_thread_keys_on_the_issue() {
         let principal = derive_principal("linear:issue-1", None, None);
         assert_eq!(principal.foreign_id, "linear-issue-issue-1");
+    }
+
+    #[test]
+    fn zulip_topics_key_on_their_channel() {
+        let deploys = derive_principal("zulip:channel:42:deploys", Some("7"), None);
+        let incidents = derive_principal("zulip:channel:42:incidents", Some("9"), None);
+        assert_eq!(deploys, incidents);
+        assert_eq!(deploys.foreign_id, "zulip-channel-42");
+        assert_eq!(deploys.name, "Zulip Channel 42");
+        assert_eq!(deploys.kind.as_deref(), Some("zulip_channel"));
+        assert_eq!(
+            deploys.labels.get("zulip_channel_id").map(String::as_str),
+            Some("42")
+        );
+    }
+
+    #[test]
+    fn zulip_direct_messages_key_on_the_participants() {
+        let one_to_one = derive_principal("zulip:dm:7", Some("7"), Some("Ada"));
+        assert_eq!(one_to_one.foreign_id, "zulip-user-7");
+        assert_eq!(one_to_one.name, "Zulip User @Ada");
+        assert_eq!(one_to_one.kind.as_deref(), Some("zulip_user"));
+
+        let group = derive_principal("zulip:dm:7,9", Some("7"), None);
+        assert_eq!(group.foreign_id, "zulip-dm-7-9");
+        assert_eq!(group.name, "Zulip Group DM 7, 9");
+        assert_eq!(group.kind.as_deref(), Some("zulip_group_dm"));
+        assert_eq!(
+            group.labels.get("zulip_user_ids").map(String::as_str),
+            Some("7,9")
+        );
+    }
+
+    #[test]
+    fn zulip_conversation_name_overrides_the_display_name_but_not_the_key() {
+        let principal = derive_principal("zulip:channel:42:deploys", None, Some("engineering"));
+        assert_eq!(principal.foreign_id, "zulip-channel-42");
+        assert_eq!(principal.name, "Zulip Channel #engineering");
+    }
+
+    #[test]
+    fn malformed_zulip_keys_fall_back_to_a_thread_principal() {
+        let principal = derive_principal("zulip:channel:x:deploys", None, None);
+        assert_eq!(principal.foreign_id, "thread-zulip-channel-x-deploys");
+        assert_eq!(principal.kind, None);
     }
 
     #[test]

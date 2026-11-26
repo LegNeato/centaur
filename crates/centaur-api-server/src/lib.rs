@@ -969,6 +969,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_context_exposes_zulip_channel_and_topic() {
+        let pool =
+            PgPool::connect_lazy("postgres://postgres:postgres@localhost/centaur_test").unwrap();
+        let app = build_router_with_runtime(
+            PgSessionStore::new(pool),
+            SandboxRuntime::backend(Arc::new(TestBackend::default()), SandboxSpec::new("test")),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session/zulip%3Achannel%3A42%3Adeploy%3A%20api")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", admin_token()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["thread_key"], "zulip:channel:42:deploy: api");
+        assert_eq!(body["platform"], "zulip");
+        assert_eq!(body["zulip"]["kind"], "topic");
+        assert_eq!(body["zulip"]["channel_id"], 42);
+        assert_eq!(body["zulip"]["topic"], "deploy: api");
+        assert!(body.get("slack").is_none());
+    }
+
+    #[tokio::test]
     async fn session_context_exposes_linear_issue_comment_and_session() {
         let pool =
             PgPool::connect_lazy("postgres://postgres:postgres@localhost/centaur_test").unwrap();

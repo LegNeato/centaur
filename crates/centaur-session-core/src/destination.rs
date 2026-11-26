@@ -5,9 +5,11 @@
 //! session context route, the per-turn context line, and the structured
 //! `session_context` of each turn all use this parser.
 
+use std::{collections::BTreeSet, fmt::Write as _};
+
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::ThreadKey;
+use crate::{ThreadKey, ThreadKeyError};
 
 /// The chat surface of a thread, parsed from its thread key.
 ///
@@ -20,6 +22,7 @@ pub enum ChatDestination {
     Discord(DiscordDestination),
     Linear(LinearDestination),
     Github(GithubDestination),
+    Zulip(ZulipDestination),
 }
 
 impl ChatDestination {
@@ -30,6 +33,7 @@ impl ChatDestination {
             Self::Discord(_) => DiscordDestination::PLATFORM,
             Self::Linear(_) => LinearDestination::PLATFORM,
             Self::Github(_) => GithubDestination::PLATFORM,
+            Self::Zulip(_) => ZulipDestination::PLATFORM,
         }
     }
 
@@ -43,6 +47,7 @@ impl ChatDestination {
             Self::Discord(destination) => destination.context_line(),
             Self::Linear(destination) => destination.context_line(),
             Self::Github(destination) => destination.context_line(),
+            Self::Zulip(destination) => destination.context_line(),
         }
     }
 }
@@ -56,6 +61,7 @@ impl Serialize for ChatDestination {
             Self::Discord(destination) => map.serialize_entry(self.platform(), destination)?,
             Self::Linear(destination) => map.serialize_entry(self.platform(), destination)?,
             Self::Github(destination) => map.serialize_entry(self.platform(), destination)?,
+            Self::Zulip(destination) => map.serialize_entry(self.platform(), destination)?,
         }
         map.end()
     }
@@ -67,16 +73,24 @@ impl ThreadKey {
     /// synthetic `github-review:` sessions of githubbot.
     pub fn chat_destination(&self) -> Option<ChatDestination> {
         let key = self.as_str();
-        if let Some(rest) = key.strip_prefix("github:") {
-            return GithubDestination::parse(rest).map(ChatDestination::Github);
+        let (namespace, rest) = key.split_once(':')?;
+        match namespace {
+            GithubDestination::PLATFORM => {
+                GithubDestination::parse(rest).map(ChatDestination::Github)
+            }
+            DiscordDestination::PLATFORM => {
+                DiscordDestination::parse(rest).map(ChatDestination::Discord)
+            }
+            LinearDestination::PLATFORM => {
+                LinearDestination::parse(rest).map(ChatDestination::Linear)
+            }
+            ZulipDestination::PLATFORM => ZulipDestination::parse(rest)
+                // A conversation has one key. Another spelling of the key,
+                // for example `zulip:dm:9,7`, names no conversation.
+                .filter(|destination| destination.thread_key().as_ref() == Ok(self))
+                .map(ChatDestination::Zulip),
+            _ => SlackDestination::parse(key).map(ChatDestination::Slack),
         }
-        if let Some(rest) = key.strip_prefix("discord:") {
-            return DiscordDestination::parse(rest).map(ChatDestination::Discord);
-        }
-        if let Some(rest) = key.strip_prefix("linear:") {
-            return LinearDestination::parse(rest).map(ChatDestination::Linear);
-        }
-        SlackDestination::parse(key).map(ChatDestination::Slack)
     }
 }
 
@@ -308,6 +322,138 @@ impl GithubDestination {
             "[chat surface: GitHub · {subject} {owner}/{repo}#{number}{review_comment}. \
              Centaur posts your reply as a comment on this GitHub thread automatically — do not repost it with `gh`. \
              GitHub replies are markdown comments with no file-upload surface; share artifacts inline or as a link.]"
+        )
+    }
+}
+
+/// A Zulip conversation. The reply is a message in the same topic or
+/// direct-message conversation. The Zulip ingress has no file-upload
+/// surface. Messages are Markdown.
+///
+/// The thread key of a topic is `zulip:channel:<channel_id>:<topic>`. The
+/// thread key of a direct-message conversation is
+/// `zulip:dm:<user_id>,<user_id>,...`. The Zulip ingress mints keys with
+/// [`ZulipDestination::thread_key`]. The format therefore has one definition.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ZulipDestination {
+    Topic(ZulipTopic),
+    Direct(ZulipDirect),
+}
+
+/// A topic in a Zulip channel.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct ZulipTopic {
+    channel_id: u64,
+    topic: String,
+}
+
+impl ZulipTopic {
+    /// Zulip compares topic names without regard to case. The topic is
+    /// stored in lowercase. Every spelling of one topic therefore gets one
+    /// session.
+    pub fn new(channel_id: u64, topic: &str) -> Self {
+        Self {
+            channel_id,
+            topic: topic.to_lowercase(),
+        }
+    }
+
+    pub fn channel_id(&self) -> u64 {
+        self.channel_id
+    }
+
+    /// The lowercase topic name. The empty topic name is the general chat of
+    /// the channel.
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+}
+
+/// A Zulip direct-message conversation. Its participants other than the bot
+/// identify it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct ZulipDirect {
+    user_ids: BTreeSet<u64>,
+}
+
+impl ZulipDirect {
+    /// Returns `None` when `user_ids` is empty. Only the bot's conversation
+    /// with itself has no other participant.
+    pub fn new(user_ids: impl IntoIterator<Item = u64>) -> Option<Self> {
+        let user_ids = user_ids.into_iter().collect::<BTreeSet<_>>();
+        (!user_ids.is_empty()).then_some(Self { user_ids })
+    }
+
+    /// The participants other than the bot in ascending order.
+    pub fn user_ids(&self) -> &BTreeSet<u64> {
+        &self.user_ids
+    }
+}
+
+impl ZulipDestination {
+    const PLATFORM: &'static str = "zulip";
+
+    /// Returns the thread key of the conversation. It fails only for a topic
+    /// that does not fit in a thread key. The default Zulip limit of 60
+    /// characters always fits.
+    pub fn thread_key(&self) -> Result<ThreadKey, ThreadKeyError> {
+        let mut key = format!("{}:", Self::PLATFORM);
+        match self {
+            Self::Topic(ZulipTopic { channel_id, topic }) => {
+                // Writing to a `String` cannot fail.
+                let _ = write!(key, "channel:{channel_id}:{topic}");
+            }
+            Self::Direct(ZulipDirect { user_ids }) => {
+                key.push_str("dm:");
+                for (index, user_id) in user_ids.iter().enumerate() {
+                    if index > 0 {
+                        key.push(',');
+                    }
+                    let _ = write!(key, "{user_id}");
+                }
+            }
+        }
+        ThreadKey::parse(key)
+    }
+
+    /// Parses the text after `zulip:` in a thread key. The topic is the rest
+    /// of the key. A topic can therefore contain colons.
+    fn parse(rest: &str) -> Option<Self> {
+        if let Some(rest) = rest.strip_prefix("channel:") {
+            let (channel_id, topic) = rest.split_once(':')?;
+            return Some(Self::Topic(ZulipTopic::new(
+                channel_id.parse().ok()?,
+                topic,
+            )));
+        }
+        let user_ids = rest.strip_prefix("dm:")?;
+        let user_ids = user_ids
+            .split(',')
+            .map(str::parse)
+            .collect::<Result<Vec<u64>, _>>()
+            .ok()?;
+        ZulipDirect::new(user_ids).map(Self::Direct)
+    }
+
+    fn context_line(&self) -> String {
+        let conversation = match self {
+            Self::Topic(ZulipTopic { channel_id, topic }) => {
+                format!("channel {channel_id} · topic \"{topic}\"")
+            }
+            Self::Direct(ZulipDirect { user_ids }) => {
+                let user_ids = user_ids
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("direct message with users {user_ids}")
+            }
+        };
+        format!(
+            "[chat surface: Zulip · {conversation}. \
+             Centaur posts your reply in this conversation automatically. \
+             Zulip replies are Markdown messages with no file-upload surface; share artifacts inline or as a link.]"
         )
     }
 }

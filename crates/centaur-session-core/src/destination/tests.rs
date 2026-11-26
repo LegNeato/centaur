@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::{
     ChatDestination, DiscordDestination, GithubDestination, GithubThreadKind, LinearDestination,
-    SlackDestination,
+    SlackDestination, ZulipDestination, ZulipDirect, ZulipTopic,
 };
 use crate::ThreadKey;
 
@@ -179,6 +179,112 @@ mod github {
 
         let issue = github(12, GithubThreadKind::Issue, None).context_line();
         assert!(issue.contains("issue 0xSplits/centaur#12"));
+    }
+}
+
+mod zulip {
+    use super::{ChatDestination, ZulipDestination, ZulipDirect, ZulipTopic, destination, json};
+
+    fn topic(channel_id: u64, topic: &str) -> ZulipDestination {
+        ZulipDestination::Topic(ZulipTopic::new(channel_id, topic))
+    }
+
+    fn direct(user_ids: &[u64]) -> ZulipDestination {
+        ZulipDestination::Direct(ZulipDirect::new(user_ids.iter().copied()).unwrap())
+    }
+
+    #[test]
+    fn topic_key_round_trips_and_keeps_colons_in_the_topic() {
+        let destination_in = topic(42, "deploy: api");
+        let key = destination_in.thread_key().unwrap();
+        assert_eq!(key.as_str(), "zulip:channel:42:deploy: api");
+        assert_eq!(
+            key.chat_destination(),
+            Some(ChatDestination::Zulip(destination_in))
+        );
+    }
+
+    #[test]
+    fn topic_spellings_that_differ_only_in_case_share_a_key() {
+        assert_eq!(
+            topic(42, "Deploys").thread_key().unwrap(),
+            topic(42, "deploys").thread_key().unwrap()
+        );
+        assert_eq!(topic(42, "Deploys"), topic(42, "DEPLOYS"));
+    }
+
+    #[test]
+    fn empty_topic_is_the_general_chat() {
+        let key = topic(42, "").thread_key().unwrap();
+        assert_eq!(key.as_str(), "zulip:channel:42:");
+        assert_eq!(
+            destination("zulip:channel:42:"),
+            Some(ChatDestination::Zulip(topic(42, "")))
+        );
+    }
+
+    #[test]
+    fn direct_key_lists_participants_once_in_ascending_order() {
+        let key = direct(&[9, 7, 9]).thread_key().unwrap();
+        assert_eq!(key.as_str(), "zulip:dm:7,9");
+        assert_eq!(
+            key.chat_destination(),
+            Some(ChatDestination::Zulip(direct(&[7, 9])))
+        );
+    }
+
+    #[test]
+    fn another_spelling_of_a_key_names_no_conversation() {
+        for key in [
+            "zulip:dm:9,7",
+            "zulip:dm:7,7",
+            "zulip:dm:07",
+            "zulip:dm:+7",
+            "zulip:channel:+42:deploys",
+            "zulip:channel:042:deploys",
+            "zulip:channel:42:Deploys",
+        ] {
+            assert_eq!(destination(key), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn direct_conversation_needs_a_participant() {
+        assert_eq!(ZulipDirect::new([]), None);
+        assert_eq!(destination("zulip:dm:"), None);
+    }
+
+    #[test]
+    fn malformed_keys_have_no_destination() {
+        assert_eq!(destination("zulip:channel:abc:topic"), None);
+        assert_eq!(destination("zulip:channel:42"), None);
+        assert_eq!(destination("zulip:dm:7,x"), None);
+        assert_eq!(destination("zulip:stream:42:topic"), None);
+    }
+
+    #[test]
+    fn context_line_names_the_conversation() {
+        let line = ChatDestination::Zulip(topic(42, "Deploys")).context_line();
+        assert!(line.contains("Zulip · channel 42 · topic \"deploys\""));
+        assert!(line.contains("no file-upload surface"));
+
+        let line = ChatDestination::Zulip(direct(&[9, 7])).context_line();
+        assert!(line.contains("direct message with users 7, 9"));
+    }
+
+    #[test]
+    fn serializes_the_conversation_kind() {
+        assert_eq!(
+            serde_json::to_value(ChatDestination::Zulip(topic(42, "Deploys"))).unwrap(),
+            json!({
+                "platform": "zulip",
+                "zulip": {"kind": "topic", "channel_id": 42, "topic": "deploys"},
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatDestination::Zulip(direct(&[9, 7]))).unwrap(),
+            json!({"platform": "zulip", "zulip": {"kind": "direct", "user_ids": [7, 9]}})
+        );
     }
 }
 
