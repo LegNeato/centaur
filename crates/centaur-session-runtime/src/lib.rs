@@ -6849,84 +6849,16 @@ fn merge_session_context(
     }
 }
 
-/// Build the structured per-turn session context for a thread, mirroring the
-/// `/api/session` response shape (`{ platform, <slack|discord|linear|github>: { .. } }`).
-///
-/// Resolved from the same [`ChatDestination`] the session-context route uses, so
-/// the structured context the agent sees in its input is consistent with what
-/// tools read back from the API. Returns `None` for non-platform threads (e.g.
-/// `api:` keys), which carry no chat destination and get no `session_context`.
+/// Returns the structured session context of a turn. The context has the
+/// same `{ platform, <platform>: { .. } }` form as the session context route.
+/// The agent input therefore matches what tools read from the API. A thread
+/// without a chat destination gets no context. `api:` keys are an example.
 fn session_context_for_thread(thread_key: &ThreadKey) -> Option<serde_json::Map<String, Value>> {
-    let destination = thread_key.chat_destination()?;
-    let mut context = serde_json::Map::new();
-    context.insert(
-        "platform".to_owned(),
-        Value::String(destination.platform().to_owned()),
-    );
-    let (platform_key, block) = match destination {
-        ChatDestination::Slack {
-            channel_id,
-            thread_ts,
-        } => {
-            let mut slack = serde_json::Map::new();
-            slack.insert("channel_id".to_owned(), Value::String(channel_id));
-            slack.insert("thread_ts".to_owned(), Value::String(thread_ts));
-            ("slack", slack)
-        }
-        ChatDestination::Discord {
-            guild_id,
-            channel_id,
-            thread_id,
-        } => {
-            let mut discord = serde_json::Map::new();
-            discord.insert("guild_id".to_owned(), Value::String(guild_id));
-            discord.insert("channel_id".to_owned(), Value::String(channel_id));
-            if let Some(thread_id) = thread_id {
-                discord.insert("thread_id".to_owned(), Value::String(thread_id));
-            }
-            ("discord", discord)
-        }
-        ChatDestination::Linear {
-            issue_id,
-            comment_id,
-            agent_session_id,
-        } => {
-            let mut linear = serde_json::Map::new();
-            linear.insert("issue_id".to_owned(), Value::String(issue_id));
-            if let Some(comment_id) = comment_id {
-                linear.insert("comment_id".to_owned(), Value::String(comment_id));
-            }
-            if let Some(agent_session_id) = agent_session_id {
-                linear.insert(
-                    "agent_session_id".to_owned(),
-                    Value::String(agent_session_id),
-                );
-            }
-            ("linear", linear)
-        }
-        ChatDestination::Github {
-            owner,
-            repo,
-            number,
-            kind,
-            review_comment_id,
-        } => {
-            let mut github = serde_json::Map::new();
-            github.insert("owner".to_owned(), Value::String(owner));
-            github.insert("repo".to_owned(), Value::String(repo));
-            github.insert("number".to_owned(), Value::Number(number.into()));
-            github.insert("kind".to_owned(), Value::String(kind.as_str().to_owned()));
-            if let Some(review_comment_id) = review_comment_id {
-                github.insert(
-                    "review_comment_id".to_owned(),
-                    Value::Number(review_comment_id.into()),
-                );
-            }
-            ("github", github)
-        }
-    };
-    context.insert(platform_key.to_owned(), Value::Object(block));
-    Some(context)
+    match serde_json::to_value(thread_key.chat_destination()?) {
+        Ok(Value::Object(context)) => Some(context),
+        // A destination always serializes as a map.
+        Ok(_) | Err(_) => None,
+    }
 }
 
 /// Returns the steering lines for the user messages that an append newly
@@ -7337,10 +7269,10 @@ fn insert_metadata_string_label(
 }
 
 fn slack_conversation_id(thread_key: &ThreadKey) -> Option<String> {
-    if let Some(ChatDestination::Slack { channel_id, .. }) = thread_key.chat_destination() {
-        return Some(channel_id);
+    match thread_key.chat_destination()? {
+        ChatDestination::Slack(destination) => Some(destination.channel_id),
+        _ => None,
     }
-    None
 }
 
 fn execution_metadata(

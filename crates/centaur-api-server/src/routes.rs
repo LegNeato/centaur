@@ -26,7 +26,6 @@ use centaur_session_core::{
         EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse,
         InterruptSessionExecutionRequest, InterruptSessionExecutionResponse, OnHarnessConflict,
     },
-    destination::ChatDestination,
 };
 use centaur_session_runtime::{
     ExecuteSessionInput, HarnessConflictPolicy, SandboxRuntime, SessionPrincipalRegistrar,
@@ -62,8 +61,7 @@ use crate::{
     slack_external_teams::{get_slack_external_team_ids, replace_slack_external_team_ids},
     slack_proxy::slack_proxy_router,
     types::{
-        DiscordThreadContext, EmitWorkflowEventRequest, GithubThreadContext, LinearThreadContext,
-        ListWorkflowRunsQuery, SessionContextResponse, SessionSseEvent, SlackThreadContext,
+        EmitWorkflowEventRequest, ListWorkflowRunsQuery, SessionContextResponse, SessionSseEvent,
         stream_error_sse,
     },
 };
@@ -630,73 +628,6 @@ async fn get_session_context(
     let runtime = state.runtime()?;
     let thread_key = ThreadKey::try_from(raw_thread_key)?;
     authorize_principal_session_read(&runtime, &caller, &thread_key).await?;
-    let destination = thread_key.chat_destination();
-    let platform = destination
-        .as_ref()
-        .map(ChatDestination::platform)
-        .unwrap_or("unknown")
-        .to_owned();
-    let (slack, discord, linear, github) = match destination {
-        Some(ChatDestination::Slack {
-            channel_id,
-            thread_ts,
-        }) => (
-            Some(SlackThreadContext {
-                channel_id,
-                thread_ts,
-            }),
-            None,
-            None,
-            None,
-        ),
-        Some(ChatDestination::Discord {
-            guild_id,
-            channel_id,
-            thread_id,
-        }) => (
-            None,
-            Some(DiscordThreadContext {
-                guild_id,
-                channel_id,
-                thread_id,
-            }),
-            None,
-            None,
-        ),
-        Some(ChatDestination::Linear {
-            issue_id,
-            comment_id,
-            agent_session_id,
-        }) => (
-            None,
-            None,
-            Some(LinearThreadContext {
-                issue_id,
-                comment_id,
-                agent_session_id,
-            }),
-            None,
-        ),
-        Some(ChatDestination::Github {
-            owner,
-            repo,
-            number,
-            kind,
-            review_comment_id,
-        }) => (
-            None,
-            None,
-            None,
-            Some(GithubThreadContext {
-                owner,
-                repo,
-                number,
-                kind: kind.as_str().to_owned(),
-                review_comment_id,
-            }),
-        ),
-        None => (None, None, None, None),
-    };
     let title = match runtime.session_title(&thread_key).await {
         Ok(title) => title,
         Err(error) => {
@@ -709,13 +640,9 @@ async fn get_session_context(
         }
     };
     Ok(Json(SessionContextResponse {
+        destination: thread_key.chat_destination(),
         title,
         thread_key,
-        platform,
-        slack,
-        discord,
-        linear,
-        github,
     }))
 }
 

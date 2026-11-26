@@ -1,62 +1,38 @@
 use axum::response::sse::Event;
 use centaur_session_core::{
     SessionEvent, ThreadKey,
+    destination::ChatDestination,
     event::{EventPayload, SessionEventType, StreamError},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::Value;
 use thiserror::Error;
 
+/// The body of the `GET /api/session/{thread_key}` response.
 #[derive(Clone, Debug, Serialize)]
 pub struct SessionContextResponse {
     pub thread_key: ThreadKey,
-    /// The chat surface the agent is operating on: `slack`, `discord`, `linear`,
-    /// `github`, or `unknown` for threads that are not platform-addressable.
-    pub platform: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub slack: Option<SlackThreadContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discord: Option<DiscordThreadContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub linear: Option<LinearThreadContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github: Option<GithubThreadContext>,
+    /// The chat surface of the thread. It adds `platform` and the object of
+    /// the platform. A thread that no chat platform can address gets
+    /// `"platform": "unknown"`.
+    #[serde(flatten, serialize_with = "serialize_destination")]
+    pub destination: Option<ChatDestination>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct SlackThreadContext {
-    pub channel_id: String,
-    pub thread_ts: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DiscordThreadContext {
-    pub guild_id: String,
-    pub channel_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct LinearThreadContext {
-    pub issue_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub comment_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_session_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct GithubThreadContext {
-    pub owner: String,
-    pub repo: String,
-    pub number: u64,
-    /// `issue` or `pr`.
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub review_comment_id: Option<u64>,
+fn serialize_destination<S: Serializer>(
+    destination: &Option<ChatDestination>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match destination {
+        Some(destination) => destination.serialize(serializer),
+        None => {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("platform", "unknown")?;
+            map.end()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
