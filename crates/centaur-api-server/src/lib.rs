@@ -1,7 +1,6 @@
 mod api_clients;
 mod api_jwt;
 mod auth;
-pub mod client;
 mod console;
 mod console_session;
 mod error;

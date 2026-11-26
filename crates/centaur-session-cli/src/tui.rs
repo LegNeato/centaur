@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use centaur_api_server::client::{CentaurClient, SseEventStream};
+use centaur_session_client::{SessionClient, SseEventStream};
 use centaur_session_core::ThreadKey;
 use crossterm::{
     cursor::{Hide, Show},
@@ -49,7 +49,7 @@ pub(crate) struct TuiOptions {
 }
 
 pub(crate) async fn run(
-    client: CentaurClient,
+    client: SessionClient,
     thread_key: ThreadKey,
     events: SseEventStream,
     options: TuiOptions,
@@ -131,7 +131,7 @@ async fn stream_sse_frames(
 fn handle_terminal_event(
     app: &mut TuiApp,
     event: TerminalInput,
-    client: &CentaurClient,
+    client: &SessionClient,
     thread_key: &ThreadKey,
     options: &TuiOptions,
     notice_tx: mpsc::Sender<TuiNotice>,
@@ -165,7 +165,7 @@ fn handle_terminal_event(
 fn submit_input_line(
     app: &mut TuiApp,
     line: String,
-    client: &CentaurClient,
+    client: &SessionClient,
     thread_key: &ThreadKey,
     options: &TuiOptions,
     notice_tx: mpsc::Sender<TuiNotice>,
@@ -211,7 +211,7 @@ fn submit_input_line(
 
 fn spawn_send_task(
     event: StdinEvent,
-    client: CentaurClient,
+    client: SessionClient,
     thread_key: ThreadKey,
     idle_timeout_ms: u64,
     max_duration_ms: u64,
@@ -231,7 +231,7 @@ fn spawn_send_task(
 
 async fn send_stdin_event(
     event: StdinEvent,
-    client: CentaurClient,
+    client: SessionClient,
     thread_key: ThreadKey,
     idle_timeout_ms: u64,
     max_duration_ms: u64,

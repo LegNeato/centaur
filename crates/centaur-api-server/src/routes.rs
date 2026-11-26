@@ -19,7 +19,15 @@ use axum::{
     routing::{any, delete, get, post},
 };
 use base64::{Engine as _, engine::general_purpose};
-use centaur_session_core::{ChatDestination, ThreadKey};
+use centaur_session_core::{
+    ThreadKey,
+    api::{
+        AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, CreateSessionResponse,
+        EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse,
+        InterruptSessionExecutionRequest, InterruptSessionExecutionResponse, OnHarnessConflict,
+    },
+    destination::ChatDestination,
+};
 use centaur_session_runtime::{
     ExecuteSessionInput, HarnessConflictPolicy, SandboxRuntime, SessionPrincipalRegistrar,
     SessionRuntime, SessionRuntimeError,
@@ -54,11 +62,8 @@ use crate::{
     slack_external_teams::{get_slack_external_team_ids, replace_slack_external_team_ids},
     slack_proxy::slack_proxy_router,
     types::{
-        AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, CreateSessionResponse,
-        DiscordThreadContext, EmitWorkflowEventRequest, EventsQuery, ExecuteSessionRequest,
-        ExecuteSessionResponse, GithubThreadContext, InterruptSessionExecutionRequest,
-        InterruptSessionExecutionResponse, LinearThreadContext, ListWorkflowRunsQuery,
-        OnHarnessConflict, SessionContextResponse, SessionSseEvent, SlackThreadContext,
+        DiscordThreadContext, EmitWorkflowEventRequest, GithubThreadContext, LinearThreadContext,
+        ListWorkflowRunsQuery, SessionContextResponse, SessionSseEvent, SlackThreadContext,
         stream_error_sse,
     },
 };
@@ -567,8 +572,8 @@ async fn create_or_get_session(
     let harness_type = request.harness_type;
     let runtime = state.runtime()?;
     let on_harness_conflict = match request.on_harness_conflict {
-        Some(OnHarnessConflict::Restart) => HarnessConflictPolicy::Restart,
-        Some(OnHarnessConflict::Reject) | None => HarnessConflictPolicy::Reject,
+        OnHarnessConflict::Restart => HarnessConflictPolicy::Restart,
+        OnHarnessConflict::Reject => HarnessConflictPolicy::Reject,
     };
     let outcome = match api_client {
         Some(Extension(client)) => {
@@ -763,7 +768,7 @@ async fn execute_session(
         ok: true,
         execution_id: execution.execution_id,
         thread_key: execution.thread_key,
-        status: execution.status.to_string(),
+        status: execution.status,
     }))
 }
 

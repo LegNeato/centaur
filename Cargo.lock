@@ -583,7 +583,6 @@ dependencies = [
  "centaur-workflows",
  "chrono",
  "clap",
- "eventsource-stream",
  "futures-util",
  "garde",
  "getrandom 0.3.4",
@@ -869,7 +868,7 @@ dependencies = [
 name = "centaur-session-cli"
 version = "0.1.0"
 dependencies = [
- "centaur-api-server",
+ "centaur-session-client",
  "centaur-session-core",
  "clap",
  "crossterm",
@@ -878,7 +877,21 @@ dependencies = [
  "ratatui",
  "serde_json",
  "tokio",
+ "url",
  "uuid",
+]
+
+[[package]]
+name = "centaur-session-client"
+version = "0.1.0"
+dependencies = [
+ "centaur-session-core",
+ "eventsource-stream",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]

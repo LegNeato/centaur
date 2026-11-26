@@ -14,10 +14,11 @@ use absurd::{
 };
 use centaur_iron_control::{IronControlClient, IronControlError, PrincipalInput, slugify};
 use centaur_sandbox_core::SandboxSpec;
-use centaur_session_core::{HarnessType, MessageRole, SessionMessageInput, ThreadKey};
+use centaur_session_core::{
+    HarnessType, MessageRole, SessionMessageInput, ThreadKey, event::SessionEventType,
+};
 use centaur_session_runtime::{
-    ExecuteSessionInput, HarnessConflictPolicy, SESSION_OUTPUT_LINE_EVENT, SandboxRuntime,
-    SessionRuntime,
+    ExecuteSessionInput, HarnessConflictPolicy, SandboxRuntime, SessionRuntime,
 };
 use centaur_session_sqlx::PgSessionStore;
 use chrono::{DateTime, Utc};
@@ -690,7 +691,7 @@ impl WorkflowRuntime {
             }
         })?;
         let default_harness = session_runtime.default_harness();
-        let schedule_default_harness = default_harness.clone();
+        let schedule_default_harness = default_harness;
         let schedule_tick_client = schedule_client.clone();
         let workflow_client_for_schedule = workflow_client.clone();
         let schedule_registry_for_task = schedule_registry.clone();
@@ -700,7 +701,7 @@ impl WorkflowRuntime {
                 let schedule_client = schedule_tick_client.clone();
                 let workflow_client = workflow_client_for_schedule.clone();
                 let schedules = schedule_registry_for_task.clone();
-                let default_harness = schedule_default_harness.clone();
+                let default_harness = schedule_default_harness;
                 async move {
                     run_schedule_tick(
                         input,
@@ -811,7 +812,7 @@ impl WorkflowRuntime {
                     input: request.input,
                     harness_type: request
                         .harness_type
-                        .unwrap_or_else(|| self.inner.default_harness.clone()),
+                        .unwrap_or_else(|| self.inner.default_harness),
                     slack_button_feedback: feedback,
                 },
                 SpawnOptions {
@@ -3165,7 +3166,7 @@ async fn start_python_child_workflow(
             WorkflowTaskInput {
                 workflow_name: workflow_name.to_owned(),
                 input: child_input,
-                harness_type: parent.harness_type.clone(),
+                harness_type: parent.harness_type,
                 slack_button_feedback: None,
             },
             SpawnOptions {
@@ -3281,7 +3282,7 @@ async fn run_python_agent_turn(
             )
         })
     });
-    let harness_type = parse_agent_harness(&args)?.unwrap_or_else(|| input.harness_type.clone());
+    let harness_type = parse_agent_harness(&args)?.unwrap_or(input.harness_type);
     let persona_id = args
         .get("persona_id")
         .or_else(|| args.get("persona"))
@@ -4049,13 +4050,13 @@ async fn run_agent_session_turn(
         if event.execution_id.as_deref() != Some(execution.execution_id.as_str()) {
             continue;
         }
-        match event.event_type.as_str() {
-            SESSION_OUTPUT_LINE_EVENT => {
+        match event.event_type.parse::<SessionEventType>() {
+            Ok(SessionEventType::OutputLine) => {
                 if let Some(line) = event.payload.as_str() {
                     output_lines.push(line.to_owned());
                 }
             }
-            "session.execution_completed" => {
+            Ok(SessionEventType::ExecutionCompleted) => {
                 return Ok(AgentTurnResult {
                     thread_key: thread_key.into_string(),
                     execution_id: execution.execution_id,
@@ -4064,7 +4065,7 @@ async fn run_agent_session_turn(
                     output_lines,
                 });
             }
-            "session.execution_failed" | "session.execution_cancelled" => {
+            Ok(SessionEventType::ExecutionFailed | SessionEventType::ExecutionCancelled) => {
                 let result = AgentTurnResult {
                     thread_key: thread_key.into_string(),
                     execution_id: execution.execution_id,

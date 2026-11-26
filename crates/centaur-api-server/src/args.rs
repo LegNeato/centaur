@@ -1422,7 +1422,7 @@ impl SandboxArgs {
         let mut workload = SandboxWorkloadMode::codex_app_server(
             image,
             self.codex_app_server_env_template()?,
-            self.default_harness.clone(),
+            self.default_harness,
         );
         if let Some(resources) = resource_requirements(
             self.sandbox_resources_json.as_deref(),
@@ -1856,7 +1856,7 @@ impl SandboxArgs {
             .filter(|raw| !raw.is_empty())
         else {
             return Ok(vec![WarmPoolTarget {
-                harness: self.default_harness.clone(),
+                harness: self.default_harness,
                 repo_cache: SandboxRepoCacheAccess::All,
                 persona: None,
                 size: self.warm_pool_size,
@@ -4598,7 +4598,7 @@ mod tests {
         let _env = EnvGuard::set(&[("CLAUDE_CODE_AUTH_MODE", "api_key")]);
         for engine in [HarnessType::Pi, HarnessType::Omp] {
             let pi = |auth_mode: Option<&str>| IronProxyHarnessArgs {
-                engine: engine.clone(),
+                engine,
                 auth_mode: auth_mode.map(str::to_owned),
             };
 

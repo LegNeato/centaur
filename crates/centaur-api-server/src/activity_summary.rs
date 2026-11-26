@@ -4,8 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use centaur_session_core::{MessageRole, SessionEvent, ThreadKey, ThreadKeyError};
-use centaur_session_runtime::SESSION_OUTPUT_LINE_EVENT;
+use centaur_session_core::{
+    MessageRole, SessionEvent, ThreadKey, ThreadKeyError,
+    event::{EventPayload, ProgressUpdate, SessionEventType},
+};
 use centaur_session_sqlx::{PgSessionStore, SessionEventNotification, SessionStoreError};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -17,7 +19,6 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 pub(crate) const SESSION_ACTIVITY_SUMMARY_EVENT: &str = "session.activity_summary";
-pub(crate) const SESSION_PROGRESS_UPDATE_EVENT: &str = "session.progress_update";
 
 /// How often running executions are checked for a due progress update, so an
 /// update still lands while a long tool call produces no new events.
@@ -236,7 +237,7 @@ impl ActivitySummaryWorker {
             self.states.remove(execution_id);
             return Ok(());
         }
-        if event.event_type != SESSION_OUTPUT_LINE_EVENT {
+        if event.event_type != SessionEventType::OutputLine.as_ref() {
             return Ok(());
         }
 
@@ -377,28 +378,31 @@ impl ProgressJob {
             );
             return Ok(None);
         };
+        let update = ProgressUpdate {
+            execution_id: self.execution_id,
+            text,
+            // Lets renderers drop stale updates when they replay history.
+            created_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                .try_into()
+                .unwrap_or(i64::MAX),
+            elapsed_secs: self.elapsed.as_secs(),
+            model: self.model,
+        };
         // The store re-checks under the thread event lock that the execution
         // is still active, so an update never lands after its terminal event.
         let appended = self
             .store
             .append_active_execution_event_unless_recent(
                 &self.thread_key,
-                &self.execution_id,
-                SESSION_PROGRESS_UPDATE_EVENT,
-                json!({
-                    // Lets renderers drop stale updates when they replay history.
-                    "created_at_ms": time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,
-                    "elapsed_secs": self.elapsed.as_secs(),
-                    "execution_id": self.execution_id,
-                    "model": self.model,
-                    "text": text,
-                }),
+                &update.execution_id,
+                ProgressUpdate::EVENT_TYPE.as_ref(),
+                update.to_value(),
                 self.window,
             )
             .await?;
         Ok(appended.map(|_| ProgressOutcome::Published {
-            execution_id: self.execution_id,
-            text,
+            execution_id: update.execution_id,
+            text: update.text,
         }))
     }
 }
@@ -1353,7 +1357,7 @@ mod tests {
             event_id: 7,
             thread_key: ThreadKey::parse("test:thread").unwrap(),
             execution_id: Some("exec-1".to_owned()),
-            event_type: SESSION_OUTPUT_LINE_EVENT.to_owned(),
+            event_type: SessionEventType::OutputLine.to_string(),
             payload: Value::String(line.to_string()),
             created_at: OffsetDateTime::now_utc(),
         }

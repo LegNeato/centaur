@@ -30,10 +30,14 @@ use centaur_sandbox_manager::{
     WarmPoolManager,
 };
 use centaur_session_core::{
-    ChatDestination, ExecutionStatus, HarnessType, MessageRole,
-    SandboxCapabilities as SessionSandboxCapabilities,
+    ExecutionStatus, HarnessType, MessageRole, SandboxCapabilities as SessionSandboxCapabilities,
     SandboxRepoCacheAccess as SessionRepoCacheAccess, Session, SessionEvent, SessionExecution,
     SessionMessageInput, ThreadKey,
+    api::{SteeringOutcome, SteeringStatus},
+    destination::ChatDestination,
+    event::{
+        EventPayload, ExecutionCancelled, ExecutionCompleted, ExecutionFailed, SessionEventType,
+    },
 };
 use centaur_session_sqlx::{
     PgSessionStore, SessionEventListener, SessionStoreError, default_metadata,
@@ -69,7 +73,6 @@ use title_generator::{
     OpenAiSessionTitleGenerator, sanitize_session_title, session_title_source_from_parts,
 };
 
-pub const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
 pub const SESSION_FIRST_TOKEN_EVENT: &str = "session.first_token";
 
 const EVENT_STREAM_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -499,29 +502,6 @@ pub struct ExecuteSessionInput {
     pub max_duration_ms: Option<u64>,
 }
 
-/// Whether appended user messages reached a running execution as a steer.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SteeringStatus {
-    /// Written to the active execution's sandbox input.
-    Delivered,
-    /// No execution was queued or running, so no harness saw the messages.
-    NoActiveExecution,
-    /// Nothing was written (lookup failed, no pipe, or the execution ended
-    /// first), so no harness saw the messages.
-    NotDelivered,
-    /// Writing to the sandbox failed partway or with an ambiguous transport
-    /// error; the harness may have seen some or all of the messages.
-    DeliveryUnknown,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SteeringOutcome {
-    pub status: SteeringStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_id: Option<String>,
-}
-
 #[derive(Clone, Debug)]
 pub struct AppendMessagesOutcome {
     pub message_ids: Vec<String>,
@@ -795,7 +775,6 @@ impl SessionRuntime {
     pub fn default_harness(&self) -> HarnessType {
         self.sandbox_runtime
             .default_harness
-            .clone()
             .unwrap_or(HarnessType::Codex)
     }
 
@@ -1195,7 +1174,7 @@ impl SessionRuntime {
                 Err(SessionStoreError::NotFound { .. }) => None,
                 Err(error) => return Err(error.into()),
             };
-            let existing_harness = existing.as_ref().map(|(_, harness)| harness.clone());
+            let existing_harness = existing.as_ref().map(|(_, harness)| *harness);
             let persona_resolution = match existing.map(|(persona_id, _)| persona_id) {
                 Some(persona_id) => PersonaResolution {
                     context: None,
@@ -2508,17 +2487,20 @@ impl SessionRuntime {
                 return;
             }
         };
+        let payload = ExecutionFailed {
+            execution_id: execution_id.to_owned(),
+            thread_key: thread_key.clone(),
+            error: error_message,
+            reason: None,
+            max_duration_ms: None,
+        };
         let _ = self
             .store
             .append_event(
                 thread_key,
                 Some(execution_id),
-                "session.execution_failed",
-                json!({
-                    "execution_id": execution_id,
-                    "thread_key": thread_key.as_str(),
-                    "error": error_message,
-                }),
+                ExecutionFailed::EVENT_TYPE.as_ref(),
+                payload.to_value(),
             )
             .await;
         record_finished_execution_metric(
@@ -4301,7 +4283,7 @@ impl SandboxRuntime {
         backend: Arc<dyn SandboxBackend>,
         workload: SandboxWorkloadMode,
     ) -> Self {
-        let default_harness = Some(workload.harness.clone());
+        let default_harness = Some(workload.harness);
         let warm_workload = workload.clone();
         let mut runtime = Self::backend_with_warm_spec_factory(
             backend,
@@ -4565,10 +4547,9 @@ fn session_event_stream(
 /// Terminal event types for a single execution: once one of these is emitted
 /// on an execution-scoped stream, the stream has nothing left to deliver.
 pub(crate) fn is_terminal_execution_event(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "session.execution_completed" | "session.execution_failed" | "session.execution_cancelled"
-    )
+    event_type
+        .parse::<SessionEventType>()
+        .is_ok_and(SessionEventType::ends_execution)
 }
 
 /// How a stdout pump pass ended once the attach stream closed.
@@ -5577,22 +5558,18 @@ async fn record_terminal_output(
             else {
                 return Ok(());
             };
-            let mut payload = json!({
-                "execution_id": execution_id,
-                "thread_key": thread_key.as_str(),
-                "completion_reason": reason,
-            });
-            if let (Some(result_text), Some(object)) =
-                (result_text.as_deref(), payload.as_object_mut())
-            {
-                object.insert("result_text".to_owned(), json!(result_text));
-            }
+            let payload = ExecutionCompleted {
+                execution_id: execution_id.to_owned(),
+                thread_key: thread_key.clone(),
+                completion_reason: reason.to_owned(),
+                result_text,
+            };
             ctx.store
                 .append_event(
                     thread_key,
                     Some(execution_id),
-                    "session.execution_completed",
-                    payload,
+                    ExecutionCompleted::EVENT_TYPE.as_ref(),
+                    payload.to_value(),
                 )
                 .await?;
             (execution, "completed")
@@ -5609,16 +5586,17 @@ async fn record_terminal_output(
             else {
                 return Ok(());
             };
+            let payload = ExecutionCancelled {
+                execution_id: execution_id.to_owned(),
+                thread_key: thread_key.clone(),
+                reason: reason.to_owned(),
+            };
             ctx.store
                 .append_event(
                     thread_key,
                     Some(execution_id),
-                    "session.execution_cancelled",
-                    json!({
-                        "execution_id": execution_id,
-                        "thread_key": thread_key.as_str(),
-                        "reason": reason,
-                    }),
+                    ExecutionCancelled::EVENT_TYPE.as_ref(),
+                    payload.to_value(),
                 )
                 .await?;
             (execution, "cancelled")
@@ -5636,16 +5614,19 @@ async fn record_terminal_output(
             else {
                 return Ok(());
             };
+            let payload = ExecutionFailed {
+                execution_id: execution_id.to_owned(),
+                thread_key: thread_key.clone(),
+                error,
+                reason: None,
+                max_duration_ms: None,
+            };
             ctx.store
                 .append_event(
                     thread_key,
                     Some(execution_id),
-                    "session.execution_failed",
-                    json!({
-                        "execution_id": execution_id,
-                        "thread_key": thread_key.as_str(),
-                        "error": error.as_str(),
-                    }),
+                    ExecutionFailed::EVENT_TYPE.as_ref(),
+                    payload.to_value(),
                 )
                 .await?;
             (execution, "failed")
@@ -5768,18 +5749,19 @@ async fn record_max_duration_failure(
             "failed to touch sandbox activity after max duration"
         );
     }
+    let payload = ExecutionFailed {
+        execution_id: execution_id.to_owned(),
+        thread_key: thread_key.clone(),
+        error,
+        reason: Some("max_duration_exceeded".to_owned()),
+        max_duration_ms: Some(max_duration_ms),
+    };
     ctx.store
         .append_event(
             thread_key,
             Some(execution_id),
-            "session.execution_failed",
-            json!({
-                "execution_id": execution_id,
-                "thread_key": thread_key.as_str(),
-                "error": error,
-                "reason": "max_duration_exceeded",
-                "max_duration_ms": max_duration_ms,
-            }),
+            ExecutionFailed::EVENT_TYPE.as_ref(),
+            payload.to_value(),
         )
         .await?;
     record_finished_execution_metric(
@@ -7007,7 +6989,7 @@ async fn append_output_line(
             execution_id,
             &ctx.stdout_owner_id,
             STDOUT_OWNER_LEASE,
-            SESSION_OUTPUT_LINE_EVENT,
+            SessionEventType::OutputLine.as_ref(),
             Value::String(safe_line),
         )
         .await?;

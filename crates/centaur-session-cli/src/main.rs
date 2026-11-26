@@ -1,10 +1,14 @@
 use std::str::FromStr;
 
-use centaur_api_server::{
-    client::{CentaurClient, SseEvent as ApiSseEvent, SseEventStream},
-    types::{AppendMessagesRequest, CreateSessionRequest, ExecuteSessionRequest},
+use centaur_session_client::{SessionClient, SseEvent, SseEventStream};
+use centaur_session_core::{
+    HarnessType, MessageRole, SessionMessageInput, ThreadKey,
+    api::{
+        AppendMessagesRequest, CreateSessionRequest, EventsQuery, ExecuteSessionRequest,
+        OnHarnessConflict,
+    },
+    event::SessionEventType,
 };
-use centaur_session_core::{HarnessType, MessageRole, SessionMessageInput, ThreadKey};
 use clap::{Parser, ValueEnum};
 use eyre::{Result, WrapErr, bail, eyre};
 use futures_util::StreamExt;
@@ -13,19 +17,20 @@ use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     task::JoinHandle,
 };
+use url::Url;
 use uuid::Uuid;
 
 mod tui;
 
 const DEFAULT_MESSAGE: &str = "Reply with exactly PONG and nothing else.";
 
-pub(crate) type SseFrame = ApiSseEvent;
+pub(crate) type SseFrame = SseEvent;
 
 #[derive(Debug, Parser)]
 #[command(about = "Create, execute, or attach to a Centaur session")]
 struct Args {
     #[arg(long, env = "CENTAUR_API_URL", default_value = "http://127.0.0.1:8080")]
-    api_url: ApiBaseUrl,
+    api_url: Url,
 
     #[arg(long, env = "CENTAUR_API_TOKEN", hide_env_values = true)]
     api_token: String,
@@ -85,12 +90,12 @@ async fn main() -> Result<()> {
     if args.api_token.trim().is_empty() {
         bail!("CENTAUR_API_TOKEN must not be empty");
     }
-    let client = CentaurClient::with_bearer_token(args.api_url.as_str(), &args.api_token)
+    let client = SessionClient::with_bearer_token(args.api_url.clone(), &args.api_token)
         .wrap_err("configure API authentication")?;
 
     if attach_mode {
         let events = client
-            .stream_events(&thread_key, args.after_event_id)
+            .stream_events(&thread_key, &events_query(&args))
             .await
             .wrap_err("open event stream")?;
         if args.tui {
@@ -108,13 +113,13 @@ async fn main() -> Result<()> {
     client
         .create_session(
             &thread_key,
-            CreateSessionRequest {
+            &CreateSessionRequest {
                 harness_type: args.harness_type.into(),
                 persona_id: None,
                 metadata: Some(json!({
                     "source": "centaur-session-cli",
                 })),
-                on_harness_conflict: None,
+                on_harness_conflict: OnHarnessConflict::Reject,
                 principal: None,
             },
         )
@@ -133,7 +138,7 @@ async fn main() -> Result<()> {
     };
 
     let events = client
-        .stream_events(&thread_key, args.after_event_id)
+        .stream_events(&thread_key, &events_query(&args))
         .await
         .wrap_err("open event stream")?;
 
@@ -154,6 +159,13 @@ async fn main() -> Result<()> {
     }
 
     run_stream_and_optional_stdin(client, thread_key, events, stream_run_options(&args)).await
+}
+
+fn events_query(args: &Args) -> EventsQuery {
+    EventsQuery {
+        after_event_id: Some(args.after_event_id),
+        execution_id: None,
+    }
 }
 
 fn tui_options(args: &Args) -> tui::TuiOptions {
@@ -214,14 +226,14 @@ fn thread_key_arg(args: &Args, attach_mode: bool) -> Result<(ThreadKey, bool)> {
 }
 
 pub(crate) async fn append_user_message(
-    client: &CentaurClient,
+    client: &SessionClient,
     thread_key: &ThreadKey,
     text: &str,
 ) -> Result<()> {
     client
         .append_messages(
             thread_key,
-            AppendMessagesRequest {
+            &AppendMessagesRequest {
                 messages: vec![SessionMessageInput {
                     client_message_id: None,
                     role: MessageRole::User,
@@ -237,7 +249,7 @@ pub(crate) async fn append_user_message(
 }
 
 pub(crate) async fn execute_input_lines(
-    client: &CentaurClient,
+    client: &SessionClient,
     thread_key: &ThreadKey,
     input_lines: Vec<String>,
     idle_timeout_ms: u64,
@@ -246,7 +258,7 @@ pub(crate) async fn execute_input_lines(
     client
         .execute_session(
             thread_key,
-            ExecuteSessionRequest {
+            &ExecuteSessionRequest {
                 idempotency_key: None,
                 metadata: Some(json!({
                     "source": "centaur-session-cli",
@@ -261,7 +273,7 @@ pub(crate) async fn execute_input_lines(
 }
 
 async fn run_stream_and_optional_stdin(
-    client: CentaurClient,
+    client: SessionClient,
     thread_key: ThreadKey,
     events: SseEventStream,
     options: StreamRunOptions,
@@ -308,7 +320,7 @@ struct StreamRunOptions {
 }
 
 fn spawn_stdin_events(
-    client: CentaurClient,
+    client: SessionClient,
     thread_key: ThreadKey,
     idle_timeout_ms: u64,
     max_duration_ms: u64,
@@ -449,10 +461,9 @@ pub(crate) fn parse_json_or_string(data: &str) -> Value {
 }
 
 pub(crate) fn is_terminal_event(event: &str) -> bool {
-    matches!(
-        event,
-        "session.execution_completed" | "session.execution_failed" | "session.execution_cancelled"
-    )
+    event
+        .parse::<SessionEventType>()
+        .is_ok_and(SessionEventType::ends_execution)
 }
 
 #[derive(Debug)]
@@ -534,27 +545,6 @@ fn parse_json_stdin_event(line: &str) -> Result<StdinEvent> {
         }
         Some("quit" | "exit") => Ok(StdinEvent::Quit),
         _ => Ok(StdinEvent::InputLine(line.to_owned())),
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ApiBaseUrl(String);
-
-impl ApiBaseUrl {
-    fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl FromStr for ApiBaseUrl {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = value.trim_end_matches('/');
-        if value.is_empty() {
-            return Err("api_url must not be empty".to_owned());
-        }
-        Ok(Self(value.to_owned()))
     }
 }
 

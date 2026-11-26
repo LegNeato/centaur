@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use centaur_session_core::{SessionEvent, ThreadKey};
+use centaur_session_core::{SessionEvent, ThreadKey, event::SessionEventType};
 use eventsource_stream::{Event as SseFrame, Eventsource};
 use futures_util::{StreamExt, TryStreamExt, future::ready, stream::BoxStream};
 use serde::{Deserialize, Serialize};
@@ -27,14 +27,12 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 
-use crate::{SESSION_OUTPUT_LINE_EVENT, is_terminal_execution_event};
+use crate::is_terminal_execution_event;
 
 /// Timeout for control POSTs. The event stream deliberately has none: a live
 /// tail can outlive any fixed timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ERROR_BODY_CHARS: usize = 512;
-/// Event type the brain uses for a mid-stream fault; it carries no event id.
-const STREAM_ERROR_EVENT: &str = "session.stream_error";
 
 /// Raw brain event bytes, as proxied to `GET /api/session/{k}/events`.
 pub type BrainByteStream = BoxStream<'static, Result<Bytes, BrainError>>;
@@ -336,7 +334,9 @@ fn parse_frame(
         frame.event.clone()
     };
     let payload = parse_payload(&event_type, &frame.data);
-    if event_type == STREAM_ERROR_EVENT {
+    // The brain reports a fault during a stream as a stream error without an
+    // event ID.
+    if event_type == SessionEventType::StreamError.as_ref() {
         return Err(BrainError::Stream(stream_error_text(&payload)));
     }
     let event_id =
@@ -365,7 +365,7 @@ fn parse_frame(
 /// `session.output.line` carries one raw harness line; every other event type
 /// carries one-line JSON.
 fn parse_payload(event_type: &str, data: &str) -> Value {
-    if event_type == SESSION_OUTPUT_LINE_EVENT {
+    if event_type == SessionEventType::OutputLine.as_ref() {
         return Value::String(data.to_owned());
     }
     serde_json::from_str(data).unwrap_or_else(|_| Value::String(data.to_owned()))
@@ -631,7 +631,7 @@ mod tests {
         );
         assert_eq!(events[0].event_type, "session.execution_started");
         // Output lines are string payloads on the in-process stream too.
-        assert_eq!(events[1].event_type, SESSION_OUTPUT_LINE_EVENT);
+        assert_eq!(events[1].event_type, SessionEventType::OutputLine.as_ref());
         assert_eq!(
             events[1].payload.as_str(),
             Some(r#"{"method":"item/agentMessage/delta","params":{"delta":"hi"}}"#)
@@ -664,7 +664,8 @@ mod tests {
     async fn stream_error_frames_fail_the_parsed_stream() {
         let brain = FakeBrain::start().await;
         brain.set_event_frames(vec![format!(
-            "event: {STREAM_ERROR_EVENT}\ndata: {{\"error\":\"upstream died\"}}\n\n"
+            "event: {}\ndata: {{\"error\":\"upstream died\"}}\n\n",
+            SessionEventType::StreamError
         )]);
         let client = BrainClient::new(brain.url()).unwrap();
 
