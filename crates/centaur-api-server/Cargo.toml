@@ -23,6 +23,7 @@ centaur-session-runtime.workspace = true
 centaur-session-sqlx.workspace = true
 centaur-telemetry.workspace = true
 centaur-workflows.workspace = true
+centaur-zulip.workspace = true
 chrono.workspace = true
 clap.workspace = true
 futures-util.workspace = true

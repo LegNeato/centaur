@@ -50,6 +50,9 @@ pub(crate) enum Capability {
     WorkflowsActions,
     /// The Slack proxy. The sandbox token's channel lists scope it.
     SlackProxy,
+    /// The Zulip routes of the agent. The session of the sandbox scopes them
+    /// to its own conversation.
+    ZulipProxy,
     SlackExternalTeamsRead,
     SlackExternalTeamsWrite,
     // Console session API.
@@ -105,6 +108,7 @@ impl Capability {
             Self::WorkflowsEvents => "workflows.events",
             Self::WorkflowsActions => "workflows.actions",
             Self::SlackProxy => "slack.proxy",
+            Self::ZulipProxy => "zulip.proxy",
             Self::SlackExternalTeamsRead => "slack_external_teams.read",
             Self::SlackExternalTeamsWrite => "slack_external_teams.write",
             Self::ConsoleRead => "console.read",
@@ -123,7 +127,7 @@ impl Capability {
     /// Parses a sandbox token capability name. Unknown names are ignored so a
     /// newer proxy-sync can add one without breaking an older api-rs.
     pub(crate) fn from_str(name: &str) -> Option<Self> {
-        const ALL: [Capability; 21] = [
+        const ALL: [Capability; 22] = [
             Capability::SessionsRead,
             Capability::SessionsWrite,
             Capability::SessionsSandboxRelease,
@@ -133,6 +137,7 @@ impl Capability {
             Capability::WorkflowsEvents,
             Capability::WorkflowsActions,
             Capability::SlackProxy,
+            Capability::ZulipProxy,
             Capability::SlackExternalTeamsRead,
             Capability::SlackExternalTeamsWrite,
             Capability::ConsoleRead,
@@ -197,6 +202,7 @@ impl Capability {
             | Self::WorkflowsEvents
             | Self::WorkflowsActions
             | Self::SlackProxy
+            | Self::ZulipProxy
             | Self::SlackExternalTeamsRead
             | Self::SlackExternalTeamsWrite => Surface::ApiRs,
         }

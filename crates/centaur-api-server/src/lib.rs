@@ -12,6 +12,7 @@ mod slack_proxy;
 mod tool_discovery;
 pub mod types;
 mod upload;
+mod zulip_proxy;
 
 pub use auth::{ApiAuthConfig, ApiAuthConfigError};
 pub use centaur_session_runtime::{SandboxRuntime, SessionRuntime};
@@ -620,6 +621,44 @@ mod tests {
                         assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {uri}");
                     }
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn zulip_proxy_routes_require_the_sandbox_token() {
+        let forged = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "iss": "centaur-console",
+                "sub": "prn_sandbox",
+                "aud": "centaur-api",
+                "iat": 1_700_000_000i64,
+                "exp": 4_102_444_800i64,
+                "capabilities": ["zulip.proxy"],
+            }),
+            &EncodingKey::from_secret(b"wrong-secret"),
+        )
+        .unwrap();
+
+        for uri in ["/api/zulip/messages", "/api/zulip/files?filename=a.txt"] {
+            for (authorization, expected) in [
+                (None, StatusCode::UNAUTHORIZED),
+                (Some(forged.clone()), StatusCode::UNAUTHORIZED),
+                // An ingress key cannot post for an agent.
+                (Some("test-slackbot-key".to_owned()), StatusCode::FORBIDDEN),
+                (Some(admin_token()), StatusCode::FORBIDDEN),
+            ] {
+                let mut request = Request::builder().method(Method::POST).uri(uri);
+                if let Some(token) = &authorization {
+                    request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+                }
+                let response =
+                    build_router_with_app_state(AppState::unready(test_auth_with_slack()))
+                        .oneshot(request.body(Body::from("{}")).unwrap())
+                        .await
+                        .unwrap();
+                assert_eq!(response.status(), expected, "{uri}");
             }
         }
     }

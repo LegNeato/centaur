@@ -43,8 +43,9 @@ pub(crate) const CODEMODE_TOKEN_LIFETIME: i64 = 900;
 pub(crate) const CODEMODE_TOKEN_WINDOW: i64 = 600;
 /// Capability names are shared with `centaur-api-server`; the token claim is
 /// the wire contract between the two processes.
-const SANDBOX_API_CAPABILITIES: [&str; 5] = [
+const SANDBOX_API_CAPABILITIES: [&str; 6] = [
     "slack.proxy",
+    "zulip.proxy",
     "sandbox.permissions",
     "sandbox.skills",
     "sandbox.tasks",
@@ -298,6 +299,7 @@ mod tests {
     fn the_token_carries_every_sandbox_api_capability() {
         for capability in [
             "slack.proxy",
+            "zulip.proxy",
             "sandbox.permissions",
             "sandbox.skills",
             "sandbox.tasks",

@@ -1365,6 +1365,20 @@ impl PgSessionStore {
         Ok(exists)
     }
 
+    /// Returns the thread keys of the sessions that hold `sandbox_id`.
+    pub async fn thread_keys_for_sandbox(
+        &self,
+        sandbox_id: &str,
+    ) -> Result<Vec<ThreadKey>, SessionStoreError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "select thread_key from sessions where sandbox_id = $1 order by thread_key",
+        )
+        .bind(sandbox_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(parse_persisted).collect()
+    }
+
     pub async fn list_referenced_sandbox_ids(&self) -> Result<Vec<String>, SessionStoreError> {
         let rows = sqlx::query_scalar::<_, String>(
             r#"
@@ -2889,6 +2903,48 @@ mod tests {
         assert_eq!(candidate.sandbox_id, sandbox_id);
         assert_eq!(candidate.execution_id, execution_id);
         assert_eq!(candidate.idle_timeout, Duration::from_secs(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_keys_for_sandbox_lists_only_the_sessions_that_hold_it() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let sandbox_id = format!("sbx-holder-{}", Uuid::new_v4());
+        let holder = ThreadKey::parse(format!("test:holder-{}", Uuid::new_v4())).unwrap();
+        let other = ThreadKey::parse(format!("test:other-{}", Uuid::new_v4())).unwrap();
+        for key in [&holder, &other] {
+            store
+                .create_or_get_session(
+                    key,
+                    &HarnessType::Codex,
+                    None,
+                    json!({}),
+                    Default::default(),
+                )
+                .await
+                .expect("create session");
+        }
+        store
+            .update_sandbox_id(&holder, Some(&sandbox_id))
+            .await
+            .expect("assign sandbox");
+        store
+            .update_sandbox_id(&other, Some("sbx-elsewhere"))
+            .await
+            .expect("assign other sandbox");
+
+        assert_eq!(
+            store.thread_keys_for_sandbox(&sandbox_id).await.unwrap(),
+            [holder]
+        );
+        assert!(
+            store
+                .thread_keys_for_sandbox("sbx-unknown")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

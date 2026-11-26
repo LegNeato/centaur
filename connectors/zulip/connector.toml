@@ -1,0 +1,5 @@
+description = "Zulip: post messages and files to the conversation of this session"
+
+# No declared secrets. api-rs posts as the Zulip bot through its /api/zulip/*
+# routes, with the sandbox token that iron-proxy injects. The routes post only
+# to the Zulip conversation of the session that holds the sandbox.

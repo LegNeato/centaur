@@ -64,6 +64,7 @@ use crate::{
         EmitWorkflowEventRequest, ListWorkflowRunsQuery, SessionContextResponse, SessionSseEvent,
         stream_error_sse,
     },
+    zulip_proxy::zulip_proxy_router,
 };
 
 #[derive(Clone)]
@@ -333,6 +334,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
             ],
         )
         .merge_guarded(slack_proxy_router(), Capability::SlackProxy)
+        .merge_guarded(zulip_proxy_router(), Capability::ZulipProxy)
         .methods(
             "/api/workflows/schedules",
             get(list_workflow_schedules),

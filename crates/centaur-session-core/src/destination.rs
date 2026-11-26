@@ -327,8 +327,8 @@ impl GithubDestination {
 }
 
 /// A Zulip conversation. The reply is a message in the same topic or
-/// direct-message conversation. The Zulip ingress has no file-upload
-/// surface. Messages are Markdown.
+/// direct-message conversation. The agent sends a file with the `zulip`
+/// connector. The connector posts through api-rs. Messages are Markdown.
 ///
 /// The thread key of a topic is `zulip:channel:<channel_id>:<topic>`. The
 /// thread key of a direct-message conversation is
@@ -452,8 +452,8 @@ impl ZulipDestination {
         };
         format!(
             "[chat surface: Zulip · {conversation}. \
-             Centaur posts your reply in this conversation automatically. \
-             Zulip replies are Markdown messages with no file-upload surface; share artifacts inline or as a link.]"
+             Centaur posts your reply in this conversation automatically — do not repost it with `zulip.post_message`. \
+             Send files here with the `zulip.upload_file` connector. Zulip messages are Markdown.]"
         )
     }
 }

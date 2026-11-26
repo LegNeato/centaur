@@ -266,7 +266,7 @@ mod zulip {
     fn context_line_names_the_conversation() {
         let line = ChatDestination::Zulip(topic(42, "Deploys")).context_line();
         assert!(line.contains("Zulip · channel 42 · topic \"deploys\""));
-        assert!(line.contains("no file-upload surface"));
+        assert!(line.contains("`zulip.upload_file`"));
 
         let line = ChatDestination::Zulip(direct(&[9, 7])).context_line();
         assert!(line.contains("direct message with users 7, 9"));

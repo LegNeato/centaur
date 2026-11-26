@@ -581,6 +581,7 @@ dependencies = [
  "centaur-session-sqlx",
  "centaur-telemetry",
  "centaur-workflows",
+ "centaur-zulip",
  "chrono",
  "clap",
  "futures-util",

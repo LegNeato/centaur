@@ -1480,6 +1480,14 @@ impl SessionRuntime {
         });
     }
 
+    /// Returns the thread keys of the sessions that hold `sandbox_id`.
+    pub async fn thread_keys_for_sandbox(
+        &self,
+        sandbox_id: &str,
+    ) -> Result<Vec<ThreadKey>, SessionRuntimeError> {
+        Ok(self.store.thread_keys_for_sandbox(sandbox_id).await?)
+    }
+
     /// Pauses the session's sandbox now, exactly as its idle timeout would, so
     /// the next turn resumes it. Returns whether it paused: a session with no
     /// sandbox, an unfinished execution, or an already-suspended sandbox is

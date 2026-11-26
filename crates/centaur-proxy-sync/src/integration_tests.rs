@@ -939,6 +939,7 @@ async fn one_sandbox_token_is_injected_for_api_and_console_hosts() {
         claims["capabilities"],
         json!([
             "slack.proxy",
+            "zulip.proxy",
             "sandbox.permissions",
             "sandbox.skills",
             "sandbox.tasks",
