@@ -1049,6 +1049,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "centaur-zulipbot"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "centaur-session-client",
+ "centaur-session-core",
+ "centaur-zulip",
+ "clap",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7483,6 +7508,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

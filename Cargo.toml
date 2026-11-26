@@ -38,6 +38,7 @@ centaur-session-sqlx = { path = "crates/centaur-session-sqlx" }
 centaur-telemetry = { path = "crates/centaur-telemetry" }
 centaur-workflows = { path = "crates/centaur-workflows" }
 centaur-zulip = { path = "crates/centaur-zulip" }
+centaur-zulipbot = { path = "crates/centaur-zulipbot" }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 chrono-tz = "0.10.4"
@@ -60,6 +61,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.11"
+regex = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls", "stream"] }
 ratatui = "0.30"
 rustls = "0.23"
