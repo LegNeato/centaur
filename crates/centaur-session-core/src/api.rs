@@ -131,6 +131,53 @@ pub struct InterruptSessionExecutionResponse {
     pub thread_key: ThreadKey,
 }
 
+/// The body of a session API error response.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ApiErrorBody {
+    /// Always false.
+    #[serde(default)]
+    pub ok: bool,
+    /// The message for the caller. A server fault has a generic message.
+    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<ApiErrorCode>,
+    /// The harness of the existing session in a harness conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_harness: Option<HarnessType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_harness: Option<HarnessType>,
+    /// The principal of the existing session in a principal conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_principal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_principal: Option<String>,
+}
+
+impl ApiErrorBody {
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// The `code` field of a session API error response.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiErrorCode {
+    /// The session exists on another harness.
+    HarnessConflict,
+    /// The session runs as a principal other than the requested principal.
+    PrincipalConflict,
+    /// The deployment admits only preapproved principals. An operator has not
+    /// approved the session's principal.
+    SessionPrincipalNotPreapproved,
+    /// A code that this version does not know. A newer server can add codes.
+    #[serde(other)]
+    Other,
+}
+
 /// The query of `GET /api/session/{thread_key}/events`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct EventsQuery {

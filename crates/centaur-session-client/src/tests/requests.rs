@@ -1,4 +1,7 @@
-use centaur_session_core::{ThreadKey, api::EventsQuery};
+use centaur_session_core::{
+    HarnessType, ThreadKey,
+    api::{ApiErrorCode, EventsQuery},
+};
 use reqwest::StatusCode;
 use url::Url;
 
@@ -44,6 +47,36 @@ fn events_query_serializes_only_present_fields() {
 }
 
 #[test]
+fn api_code_reads_a_known_error_code() {
+    let denied = ClientError::api(
+        StatusCode::FORBIDDEN,
+        r#"{"error":"forbidden","code":"session_principal_not_preapproved"}"#.to_owned(),
+    );
+    assert_eq!(
+        denied.api_code(),
+        Some(ApiErrorCode::SessionPrincipalNotPreapproved)
+    );
+}
+
+#[test]
+fn api_code_marks_a_newer_code_as_other() {
+    let error = ClientError::api(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":"x","code":"something_new"}"#.to_owned(),
+    );
+    assert_eq!(error.api_code(), Some(ApiErrorCode::Other));
+}
+
+#[test]
+fn api_code_is_absent_for_a_missing_code_or_another_body() {
+    for body in [r#"{"error":"x"}"#, "not json", "<html>bad gateway</html>"] {
+        let error = ClientError::api(StatusCode::BAD_REQUEST, body.to_owned());
+        assert_eq!(error.api_code(), None, "{body}");
+    }
+    assert_eq!(ClientError::StreamEnded.api_code(), None);
+}
+
+#[test]
 fn server_errors_and_throttling_are_retryable() {
     for status in [
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -51,10 +84,7 @@ fn server_errors_and_throttling_are_retryable() {
         StatusCode::REQUEST_TIMEOUT,
         StatusCode::TOO_MANY_REQUESTS,
     ] {
-        let error = ClientError::Api {
-            status,
-            body: String::new(),
-        };
+        let error = ClientError::api(status, String::new());
         assert!(error.is_retryable(), "{status} should be retryable");
     }
 }
@@ -67,15 +97,27 @@ fn client_errors_are_not_retryable() {
         StatusCode::FORBIDDEN,
         StatusCode::CONFLICT,
     ] {
-        let error = ClientError::Api {
-            status,
-            body: String::new(),
-        };
+        let error = ClientError::api(status, String::new());
         assert!(!error.is_retryable(), "{status} should not be retryable");
     }
     assert!(!ClientError::InvalidBearerToken.is_retryable());
 }
 
+#[test]
+fn existing_harness_reads_only_a_harness_conflict() {
+    let conflict = ClientError::api(
+        StatusCode::CONFLICT,
+        r#"{"error":"conflict","code":"harness_conflict","existing_harness":"claudecode","requested_harness":"codex"}"#.to_owned(),
+    );
+    assert_eq!(conflict.existing_harness(), Some(HarnessType::ClaudeCode));
+
+    let principal = ClientError::api(
+        StatusCode::CONFLICT,
+        r#"{"error":"conflict","code":"principal_conflict","existing_harness":"codex"}"#.to_owned(),
+    );
+    assert_eq!(principal.existing_harness(), None);
+    assert_eq!(ClientError::StreamEnded.existing_harness(), None);
+}
 
 #[test]
 fn a_base_url_that_cannot_hold_a_path_is_rejected() {

@@ -3,11 +3,13 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use centaur_session_core::ThreadKeyError;
+use centaur_session_core::{
+    ThreadKeyError,
+    api::{ApiErrorBody, ApiErrorCode},
+};
 use centaur_session_runtime::SessionRuntimeError;
 use centaur_session_sqlx::SessionStoreError;
 use centaur_workflows::WorkflowRuntimeError;
-use serde_json::json;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -103,38 +105,33 @@ impl IntoResponse for ApiError {
         } else {
             self.to_string()
         };
-        let mut body = json!({
-            "ok": false,
-            "error": message,
-        });
+        let mut body = ApiErrorBody::new(message);
         // Structured conflict details let clients (e.g. the slackbot) recover by
         // retrying with the session's existing harness instead of parsing the
         // human-readable message.
-        if let Self::Runtime(SessionRuntimeError::Store(SessionStoreError::HarnessConflict {
-            existing,
-            requested,
-            ..
-        })) = &self
-        {
-            body["code"] = json!("harness_conflict");
-            body["existing_harness"] = json!(existing);
-            body["requested_harness"] = json!(requested);
-        }
-        if let Self::Runtime(SessionRuntimeError::Store(SessionStoreError::PrincipalConflict {
-            existing,
-            requested,
-            ..
-        })) = &self
-        {
-            body["code"] = json!("principal_conflict");
-            body["existing_principal"] = json!(existing);
-            body["requested_principal"] = json!(requested);
-        }
-        if let Self::Runtime(SessionRuntimeError::IronControl(
-            centaur_iron_control::IronControlError::SessionPrincipalNotPreapproved { .. },
-        )) = &self
-        {
-            body["code"] = json!("session_principal_not_preapproved");
+        match &self {
+            Self::Runtime(SessionRuntimeError::Store(SessionStoreError::HarnessConflict {
+                existing,
+                requested,
+                ..
+            })) => {
+                body.code = Some(ApiErrorCode::HarnessConflict);
+                body.existing_harness = existing.parse().ok();
+                body.requested_harness = requested.parse().ok();
+            }
+            Self::Runtime(SessionRuntimeError::Store(SessionStoreError::PrincipalConflict {
+                existing,
+                requested,
+                ..
+            })) => {
+                body.code = Some(ApiErrorCode::PrincipalConflict);
+                body.existing_principal = Some(existing.clone());
+                body.requested_principal = Some(requested.clone());
+            }
+            Self::Runtime(SessionRuntimeError::IronControl(
+                centaur_iron_control::IronControlError::SessionPrincipalNotPreapproved { .. },
+            )) => body.code = Some(ApiErrorCode::SessionPrincipalNotPreapproved),
+            _ => {}
         }
         let mut response = (status, Json(body)).into_response();
         if status == StatusCode::UNAUTHORIZED {
@@ -173,6 +170,7 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use centaur_iron_control::{IronControlError, PrincipalDerivationError};
+    use serde_json::json;
 
     #[test]
     fn principal_derivation_errors_are_bad_requests() {

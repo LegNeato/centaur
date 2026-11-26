@@ -886,12 +886,15 @@ dependencies = [
 name = "centaur-session-client"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "centaur-session-core",
  "eventsource-stream",
  "futures-util",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "tokio",
  "url",
 ]
 
