@@ -91,6 +91,15 @@ pub struct WorkflowOwnedSandbox {
     pub sandbox_id: String,
 }
 
+/// The result of [`PgSessionStore::append_messages`] for one message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendedMessage {
+    pub message_id: String,
+    /// False when the thread already held a message with the same client
+    /// message ID.
+    pub newly_stored: bool,
+}
+
 #[derive(Clone)]
 pub struct PgSessionStore {
     pool: PgPool,
@@ -318,18 +327,24 @@ impl PgSessionStore {
         Ok(title)
     }
 
+    /// Stores `messages` in order. The store skips a message with a client
+    /// message ID that the thread already holds. The result entry of such a
+    /// message carries the ID of the stored message.
     pub async fn append_messages(
         &self,
         thread_key: &ThreadKey,
         messages: &[SessionMessageInput],
-    ) -> Result<Vec<String>, SessionStoreError> {
+    ) -> Result<Vec<AppendedMessage>, SessionStoreError> {
         let mut tx = self.pool.begin().await?;
-        let mut message_ids = Vec::with_capacity(messages.len());
+        let mut appended = Vec::with_capacity(messages.len());
 
         for message in messages {
             let message_id = prefixed_id("msg");
             let parts = Value::Array(message.parts.clone());
-            let persisted_message_id = sqlx::query_scalar::<_, String>(
+            // The no-op update makes `returning` produce the existing row on a
+            // conflict. `xmax` is 0 only on a row version that the statement
+            // inserted. `xmax = 0` therefore identifies a new message.
+            let (message_id, newly_stored) = sqlx::query_as::<_, (String, bool)>(
                 r#"
                 insert into session_messages
                     (message_id, thread_key, client_message_id, role, parts, metadata)
@@ -337,7 +352,7 @@ impl PgSessionStore {
                 on conflict (thread_key, client_message_id)
                     where client_message_id is not null
                 do update set client_message_id = excluded.client_message_id
-                returning message_id
+                returning message_id, xmax = 0
                 "#,
             )
             .bind(&message_id)
@@ -348,11 +363,14 @@ impl PgSessionStore {
             .bind(message.metadata.clone())
             .fetch_one(&mut *tx)
             .await?;
-            message_ids.push(persisted_message_id);
+            appended.push(AppendedMessage {
+                message_id,
+                newly_stored,
+            });
         }
 
         tx.commit().await?;
-        Ok(message_ids)
+        Ok(appended)
     }
 
     pub async fn title_generation_candidate(
@@ -2422,7 +2440,7 @@ mod tests {
         time::{Duration, UNIX_EPOCH},
     };
 
-    use centaur_session_core::{HarnessType, ThreadKey};
+    use centaur_session_core::{HarnessType, MessageRole, SessionMessageInput, ThreadKey};
     use serde_json::json;
     use time::{Duration as TimeDuration, OffsetDateTime};
     use uuid::Uuid;
@@ -3422,6 +3440,47 @@ mod tests {
             completed.status,
             centaur_session_core::ExecutionStatus::Completed
         );
+    }
+
+    #[tokio::test]
+    async fn append_messages_stores_each_client_message_id_once() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let thread_key = ThreadKey::parse(format!("test:append-once-{}", Uuid::new_v4())).unwrap();
+        store
+            .create_or_get_session(
+                &thread_key,
+                &HarnessType::Codex,
+                None,
+                json!({}),
+                Default::default(),
+            )
+            .await
+            .expect("create session");
+        let message = |client_message_id: Option<&str>| SessionMessageInput {
+            client_message_id: client_message_id.map(str::to_owned),
+            role: MessageRole::User,
+            parts: vec![json!({"type": "text", "text": "hello"})],
+            metadata: json!({}),
+        };
+
+        let first = store
+            .append_messages(&thread_key, &[message(Some("chat-1")), message(None)])
+            .await
+            .expect("first append");
+        assert!(first.iter().all(|appended| appended.newly_stored));
+
+        let repeated = store
+            .append_messages(&thread_key, &[message(Some("chat-1")), message(None)])
+            .await
+            .expect("repeated append");
+        assert_eq!(repeated[0].message_id, first[0].message_id);
+        assert!(!repeated[0].newly_stored);
+        // A message without a client message ID is always a new message.
+        assert_ne!(repeated[1].message_id, first[1].message_id);
+        assert!(repeated[1].newly_stored);
+        assert_eq!(store.list_messages(&thread_key).await.unwrap().len(), 3);
     }
 
     #[tokio::test]

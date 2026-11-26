@@ -64,7 +64,8 @@ pub struct AppendMessagesResponse {
     pub ok: bool,
     pub message_ids: Vec<String>,
     /// The result of steering the active execution with the appended user
-    /// messages. It is absent when the append holds no user message.
+    /// messages. It is absent when the append stored no new user message. A
+    /// repeated client message ID stores nothing and does not steer again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steering: Option<SteeringOutcome>,
 }

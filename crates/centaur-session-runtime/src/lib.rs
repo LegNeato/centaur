@@ -40,7 +40,7 @@ use centaur_session_core::{
     },
 };
 use centaur_session_sqlx::{
-    PgSessionStore, SessionEventListener, SessionStoreError, default_metadata,
+    AppendedMessage, PgSessionStore, SessionEventListener, SessionStoreError, default_metadata,
 };
 use centaur_telemetry::{
     record_sandbox_warm_pool_claim, record_session_execution_finished,
@@ -505,7 +505,7 @@ pub struct ExecuteSessionInput {
 #[derive(Clone, Debug)]
 pub struct AppendMessagesOutcome {
     pub message_ids: Vec<String>,
-    /// `None` when the append held no user message to steer with.
+    /// `None` when the append stored no new user message.
     pub steering: Option<SteeringOutcome>,
 }
 
@@ -1395,7 +1395,7 @@ impl SessionRuntime {
                 message_count = messages.len(),
                 "appending session messages"
             );
-            let message_ids = self.store.append_messages(thread_key, messages).await?;
+            let appended = self.store.append_messages(thread_key, messages).await?;
             if let Err(error) = self.store.touch_session_sandbox_activity(thread_key).await {
                 warn!(
                     component = COMPONENT_SESSION_RUNTIME,
@@ -1410,16 +1410,16 @@ impl SessionRuntime {
                 event = "session_messages_append_completed",
                 thread_key = %thread_key,
                 message_count = messages.len(),
-                message_id_count = message_ids.len(),
+                newly_stored_count = appended.iter().filter(|message| message.newly_stored).count(),
                 "session messages appended"
             );
-            Ok(message_ids)
+            Ok(appended)
         }
         .instrument(span)
         .await;
 
-        let message_ids = match result {
-            Ok(message_ids) => message_ids,
+        let appended = match result {
+            Ok(appended) => appended,
             Err(error) => {
                 error!(
                     component = COMPONENT_SESSION_RUNTIME,
@@ -1433,11 +1433,14 @@ impl SessionRuntime {
             }
         };
         let steering = self
-            .forward_messages_to_active_execution(thread_key, messages, &message_ids)
+            .forward_messages_to_active_execution(thread_key, messages, &appended)
             .await;
         self.spawn_session_title_generation(thread_key);
         Ok(AppendMessagesOutcome {
-            message_ids,
+            message_ids: appended
+                .into_iter()
+                .map(|message| message.message_id)
+                .collect(),
             steering,
         })
     }
@@ -2557,9 +2560,9 @@ impl SessionRuntime {
         &self,
         thread_key: &ThreadKey,
         messages: &[SessionMessageInput],
-        message_ids: &[String],
+        appended: &[AppendedMessage],
     ) -> Option<SteeringOutcome> {
-        let input_lines = steering_input_lines(thread_key, messages, message_ids);
+        let input_lines = steering_input_lines(thread_key, messages, appended);
         if input_lines.is_empty() {
             return None;
         }
@@ -2673,7 +2676,11 @@ impl SessionRuntime {
                 json!({
                     "execution_id": execution.execution_id,
                     "thread_key": thread_key.as_str(),
-                    "message_ids": message_ids,
+                    "message_ids": appended
+                        .iter()
+                        .filter(|message| message.newly_stored)
+                        .map(|message| message.message_id.as_str())
+                        .collect::<Vec<_>>(),
                     "input_line_count": input_lines.len(),
                 }),
             )
@@ -6922,15 +6929,21 @@ fn session_context_for_thread(thread_key: &ThreadKey) -> Option<serde_json::Map<
     Some(context)
 }
 
+/// Returns the steering lines for the user messages that an append newly
+/// stored. A repeated client message ID does not steer again. A client can
+/// therefore retry an append without a duplicate steer.
 fn steering_input_lines(
     thread_key: &ThreadKey,
     messages: &[SessionMessageInput],
-    message_ids: &[String],
+    appended: &[AppendedMessage],
 ) -> Vec<String> {
     messages
         .iter()
-        .zip(message_ids)
-        .filter_map(|(message, message_id)| steering_input_line(thread_key, message, message_id))
+        .zip(appended)
+        .filter(|(_, appended)| appended.newly_stored)
+        .filter_map(|(message, appended)| {
+            steering_input_line(thread_key, message, &appended.message_id)
+        })
         .collect()
 }
 
@@ -8931,9 +8944,18 @@ mod tests {
                 metadata: json!({}),
             },
         ];
-        let message_ids = vec!["msg-user".to_owned(), "msg-assistant".to_owned()];
+        let appended = vec![
+            AppendedMessage {
+                message_id: "msg-user".to_owned(),
+                newly_stored: true,
+            },
+            AppendedMessage {
+                message_id: "msg-assistant".to_owned(),
+                newly_stored: true,
+            },
+        ];
 
-        let lines = steering_input_lines(&thread_key, &messages, &message_ids);
+        let lines = steering_input_lines(&thread_key, &messages, &appended);
         assert_eq!(lines.len(), 1);
 
         let value: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
@@ -8943,6 +8965,33 @@ mod tests {
         assert_eq!(value["trace_metadata"]["message_id"], "msg-user");
         assert_eq!(value["client_user_message_id"], "msg-user");
         assert_eq!(value["message"]["content"][0]["text"], "steer now");
+    }
+
+    #[test]
+    fn steering_input_lines_skip_messages_the_thread_already_held() {
+        let thread_key = ThreadKey::parse("cli:test-steering").unwrap();
+        let message = |text: &str| SessionMessageInput {
+            client_message_id: Some(text.to_owned()),
+            role: MessageRole::User,
+            parts: vec![json!({"type": "text", "text": text})],
+            metadata: json!({}),
+        };
+        let messages = vec![message("stored before"), message("new")];
+        let appended = vec![
+            AppendedMessage {
+                message_id: "msg-old".to_owned(),
+                newly_stored: false,
+            },
+            AppendedMessage {
+                message_id: "msg-new".to_owned(),
+                newly_stored: true,
+            },
+        ];
+
+        let lines = steering_input_lines(&thread_key, &messages, &appended);
+        assert_eq!(lines.len(), 1);
+        let value: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(value["client_user_message_id"], "msg-new");
     }
 
     #[test]
@@ -10821,6 +10870,52 @@ mod adoption_tests {
             .await
             .expect("append assistant message");
         assert_eq!(outcome.steering, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_append_of_a_stored_message_does_not_steer() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let _serial = TEST_LOCK.lock().await;
+        let thread_key =
+            ThreadKey::parse(format!("test:steer-repeat-{}", uuid::Uuid::new_v4())).unwrap();
+        store
+            .create_or_get_session(
+                &thread_key,
+                &HarnessType::Codex,
+                None,
+                json!({}),
+                Default::default(),
+            )
+            .await
+            .expect("create session");
+        let runtime = runtime_with(
+            &store,
+            Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new())),
+        );
+        let message = SessionMessageInput {
+            client_message_id: Some("chat-message-1".to_owned()),
+            role: MessageRole::User,
+            parts: vec![json!({"type": "text", "text": "hello"})],
+            metadata: json!({}),
+        };
+
+        let first = runtime
+            .append_messages_with_steering(&thread_key, std::slice::from_ref(&message))
+            .await
+            .expect("first append");
+        assert_eq!(
+            first.steering.map(|steering| steering.status),
+            Some(SteeringStatus::NoActiveExecution)
+        );
+
+        let repeated = runtime
+            .append_messages_with_steering(&thread_key, &[message])
+            .await
+            .expect("repeated append");
+        assert_eq!(repeated.message_ids, first.message_ids);
+        assert_eq!(repeated.steering, None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
