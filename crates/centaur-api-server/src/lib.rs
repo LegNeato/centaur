@@ -11,6 +11,7 @@ mod slack_external_teams;
 mod slack_proxy;
 mod tool_discovery;
 pub mod types;
+mod upload;
 
 pub use auth::{ApiAuthConfig, ApiAuthConfigError};
 pub use centaur_session_runtime::{SandboxRuntime, SessionRuntime};

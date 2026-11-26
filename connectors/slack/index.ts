@@ -1,6 +1,7 @@
 import type { Ctx, RequestInit, Response } from "../centaur";
 import { query, readJson, encode, type Params } from "../_lib/http";
-import { downloadTo, outputPath, requireFiles, safeFilename } from "../_lib/files";
+import { centaurBase, centaurHeaders } from "../_lib/centaur_api";
+import { downloadTo, mimeTypeFor, outputPath, requireFiles, safeFilename } from "../_lib/files";
 import { companyContextRequest, companyContextUrl, rfc3339 } from "../_lib/company_context";
 
 // Results are Slack's own objects, passed through. The interfaces list the
@@ -8,8 +9,6 @@ import { companyContextRequest, companyContextUrl, rfc3339 } from "../_lib/compa
 
 const SLACK = "https://slack.com/api";
 const FILES_HOST = "files.slack.com";
-const DEFAULT_CENTAUR_API = "http://api:8000";
-
 /**
  * How Slack is reached, chosen from the calling context. `direct`: slack.com with the linked
  * Slack user token, when the caller has a live `slack` OAuth credential. `centaur`: Centaur's
@@ -195,32 +194,9 @@ async function slackPost(ctx: Ctx, method: string, params: Params): Promise<Body
   return slackResult(res, method);
 }
 
-function centaurBase(ctx: Ctx): string {
-  return (ctx.env.CENTAUR_API_URL || DEFAULT_CENTAUR_API).replace(/\/+$/, "");
-}
-
-function centaurHeaders(ctx: Ctx): Record<string, string> {
-  const headers: Record<string, string> = { accept: "application/json" };
-  // Behind iron-proxy the API credential is injected for the API host.
-  if (ctx.env.CENTAUR_API_BEARER_TOKEN) headers.authorization = `Bearer ${ctx.env.CENTAUR_API_BEARER_TOKEN}`;
-  return headers;
-}
-
 async function centaur(ctx: Ctx, path: string, params: Params = {}, method = "GET"): Promise<Body> {
   const res = await ctx.fetch(`${centaurBase(ctx)}${path}${query(params)}`, { method, headers: centaurHeaders(ctx) });
   return readJson(res, `Centaur API ${path}`);
-}
-
-/** Content type for an upload, from the file name's extension; Slack uses it for previews. */
-function mimeFor(filename: string): string {
-  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
-  const known: Record<string, string> = {
-    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
-    pdf: "application/pdf", csv: "text/csv", txt: "text/plain", md: "text/markdown",
-    json: "application/json", html: "text/html", zip: "application/zip",
-    mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav",
-  };
-  return known[extension] ?? "application/octet-stream";
 }
 
 const seg = (value: string): string => encodeURIComponent(value.trim());
@@ -533,7 +509,7 @@ export async function upload_file(
   if (!stat) throw new Error(`no such file: ${args.path}`);
   const filename = args.filename ?? args.path.split(/[\\/]/).pop() ?? "file";
   const title = args.title ?? filename;
-  const content_type = mimeFor(filename);
+  const content_type = mimeTypeFor(filename);
   // Always through Centaur's API, even with a linked Slack user token: the file is then posted
   // by the Centaur bot rather than as the user, so Centaur recognises it as its own output.
   const params: Params = {

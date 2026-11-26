@@ -128,6 +128,18 @@ export function multipart(
   return { body, content_type: `multipart/${subtype}; boundary=${boundary}` };
 }
 
+/** Content type of an upload, from the file name's extension. Chat surfaces use it for previews. */
+export function mimeTypeFor(filename: string): string {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  const known: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+    pdf: "application/pdf", csv: "text/csv", txt: "text/plain", md: "text/markdown",
+    json: "application/json", html: "text/html", zip: "application/zip",
+    mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav",
+  };
+  return known[extension] ?? "application/octet-stream";
+}
+
 /** File extension (without the dot) for common MIME types, for naming saved files. */
 export function extensionFor(mime_type: string | undefined): string {
   const type = (mime_type ?? "").split(";")[0].trim().toLowerCase();

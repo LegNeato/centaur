@@ -19,6 +19,10 @@ use crate::{
     ApiError,
     console::sandbox::{SandboxJwtConfig, bearer_token, verify_sandbox_token},
     routes::{AppState, non_empty_env, positive_env_u64},
+    upload::{
+        DEFAULT_CONTENT_TYPE, content_length, ensure_upload_size, validate_content_type,
+        validate_filename,
+    },
 };
 
 mod catalog;
@@ -1206,7 +1210,7 @@ async fn upload_file_bytes(
         .post(upload_url)
         .header(
             header::CONTENT_TYPE,
-            content_type.unwrap_or("application/octet-stream"),
+            content_type.unwrap_or(DEFAULT_CONTENT_TYPE),
         )
         .header(header::CONTENT_LENGTH, content_length)
         .body(reqwest::Body::wrap_stream(body.into_data_stream()))
@@ -1934,28 +1938,6 @@ fn required_slack_string(value: &Value, field: &str) -> Result<String, ApiError>
         .ok_or_else(|| ApiError::BadRequest(format!("Slack response missing {field}")))
 }
 
-fn content_length(headers: &HeaderMap) -> Result<u64, ApiError> {
-    headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| ApiError::BadRequest("Content-Length header is required".to_owned()))
-}
-
-fn ensure_upload_size(len: u64, max: u64) -> Result<(), ApiError> {
-    if len == 0 {
-        return Err(ApiError::BadRequest(
-            "file body must not be empty".to_owned(),
-        ));
-    }
-    if len > max {
-        return Err(ApiError::PayloadTooLarge(format!(
-            "file body exceeds {max} byte limit"
-        )));
-    }
-    Ok(())
-}
-
 fn validate_slack_channel_id(channel_id: &str) -> Result<(), ApiError> {
     if channel_id.len() >= 9
         && matches!(channel_id.as_bytes().first(), Some(b'C' | b'D' | b'G'))
@@ -2135,21 +2117,6 @@ fn validate_slack_timestamp(timestamp: &str) -> Result<(), ApiError> {
 fn validate_slack_cursor(cursor: &str) -> Result<(), ApiError> {
     if cursor.is_empty() || cursor.len() > 4096 || cursor.chars().any(|ch| ch.is_ascii_control()) {
         return Err(ApiError::BadRequest("invalid Slack cursor".to_owned()));
-    }
-    Ok(())
-}
-
-fn validate_filename(filename: &str) -> Result<(), ApiError> {
-    let filename = filename.trim();
-    if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
-        return Err(ApiError::BadRequest("invalid filename".to_owned()));
-    }
-    Ok(())
-}
-
-fn validate_content_type(content_type: &str) -> Result<(), ApiError> {
-    if content_type.trim().is_empty() || content_type.parse::<HeaderValue>().is_err() {
-        return Err(ApiError::BadRequest("invalid content_type".to_owned()));
     }
     Ok(())
 }
@@ -3399,19 +3366,6 @@ mod tests {
     }
 
     #[test]
-    fn upload_requires_content_length() {
-        let headers = HeaderMap::new();
-        assert!(matches!(
-            content_length(&headers).unwrap_err(),
-            ApiError::BadRequest(_)
-        ));
-
-        let mut headers = HeaderMap::new();
-        headers.insert(header::CONTENT_LENGTH, "42".parse().unwrap());
-        assert_eq!(content_length(&headers).unwrap(), 42);
-    }
-
-    #[test]
     fn rejects_wrong_jwt_issuer() {
         let token = test_jwt(
             b"secret",
@@ -3479,18 +3433,6 @@ mod tests {
             Some("image/png"),
         ));
         assert!(!upstream_body_is_unexpected_html(None, Some("image/png")));
-    }
-
-    #[test]
-    fn validates_content_type() {
-        validate_content_type("application/pdf").unwrap();
-        validate_content_type("text/plain; charset=utf-8").unwrap();
-        for content_type in ["", " ", "a\nb", "a\rb", "a\0b"] {
-            assert!(matches!(
-                validate_content_type(content_type).unwrap_err(),
-                ApiError::BadRequest(_)
-            ));
-        }
     }
 
     #[test]
