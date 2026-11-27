@@ -457,7 +457,7 @@ fn translates_http_replace_to_static_input() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-slack", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-slack", &secrets, &SourcePolicy::Env);
     let SecretInput::Static(input) = &out.inputs[0] else {
         panic!("expected static")
     };
@@ -487,7 +487,7 @@ fn translates_gcp_auth_defaults_scopes_when_unset() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-gcs", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-gcs", &secrets, &SourcePolicy::Env);
     let SecretInput::GcpAuth(input) = &out.inputs[0] else {
         panic!("expected gcp_auth")
     };
@@ -509,7 +509,7 @@ fn translates_gcp_id_token_to_input() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-cloudrun", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-cloudrun", &secrets, &SourcePolicy::Env);
     let SecretInput::GcpIdToken(input) = &out.inputs[0] else {
         panic!("expected gcp_id_token")
     };
@@ -546,7 +546,7 @@ fn translates_oauth_with_json_key_fields() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-gsuite", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-gsuite", &secrets, &SourcePolicy::Env);
     let SecretInput::OAuthToken(input) = &out.inputs[0] else {
         panic!("expected oauth")
     };
@@ -572,7 +572,7 @@ fn translates_pg_dsn_to_input_with_roundtrip_foreign_id() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-reshift", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-reshift", &secrets, &SourcePolicy::Env);
     let SecretInput::PgDsn(input) = &out.inputs[0] else {
         panic!("expected pg_dsn")
     };
@@ -608,7 +608,7 @@ fn translates_pg_dsn_to_input_with_roundtrip_foreign_id() {
 #[test]
 fn translates_hmac_to_input() {
     let secrets = vec![tools::parse_secret(&entry(FALCONX_HMAC), &[]).unwrap()];
-    let out = translate::translate("tool-falconx", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-falconx", &secrets, &SourcePolicy::Env);
     let SecretInput::Hmac(input) = &out.inputs[0] else {
         panic!("expected hmac")
     };
@@ -640,7 +640,7 @@ fn translates_hmac_to_input() {
 #[test]
 fn translates_aws_auth_to_input() {
     let secrets = vec![tools::parse_secret(&entry(CLOUDWATCH_AWS), &[]).unwrap()];
-    let out = translate::translate("tool-cloudwatch", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-cloudwatch", &secrets, &SourcePolicy::Env);
     let SecretInput::AwsAuth(input) = &out.inputs[0] else {
         panic!("expected aws_auth")
     };
@@ -684,7 +684,7 @@ fn translates_aws_auth_session_token_through_policy() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-cw", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-cw", &secrets, &SourcePolicy::Env);
     let SecretInput::AwsAuth(input) = &out.inputs[0] else {
         panic!("expected aws_auth")
     };
@@ -702,7 +702,7 @@ fn translates_brokered_token_to_token_broker_static_secret() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-codex", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-codex", &secrets, &SourcePolicy::Env);
     let SecretInput::Static(input) = &out.inputs[0] else {
         panic!("expected static")
     };
@@ -739,7 +739,7 @@ fn duplicate_secret_names_get_unique_foreign_ids() {
         )
         .unwrap(),
     ];
-    let out = translate::translate("tool-x", &secrets, &SourcePolicy::env());
+    let out = translate::translate("tool-x", &secrets, &SourcePolicy::Env);
     let SecretInput::Static(a) = &out.inputs[0] else {
         panic!()
     };
@@ -763,7 +763,7 @@ fn translate_for_tool_adds_tool_identity_labels() {
         tool: "slack".to_owned(),
         overlay: "centaur-paradigm".to_owned(),
     };
-    let out = translate::translate_for_tool("tool-slack", &labels, &secrets, &SourcePolicy::env());
+    let out = translate::translate_for_tool("tool-slack", &labels, &secrets, &SourcePolicy::Env);
     let SecretInput::Static(secret) = &out.inputs[0] else {
         panic!()
     };
@@ -948,7 +948,7 @@ fn real_dune_tool_parses_and_translates() {
     let out = translate::translate(
         "tool-dune",
         &manifest.all_secrets().cloned().collect::<Vec<_>>(),
-        &SourcePolicy::env(),
+        &SourcePolicy::Env,
     );
     assert!(
         out.inputs.iter().any(
@@ -967,7 +967,7 @@ fn real_gsuite_tool_parses_oauth() {
     let out = translate::translate(
         "tool-gsuite",
         &manifest.all_secrets().cloned().collect::<Vec<_>>(),
-        &SourcePolicy::env(),
+        &SourcePolicy::Env,
     );
     assert!(
         out.inputs
@@ -975,4 +975,61 @@ fn real_gsuite_tool_parses_oauth() {
             .any(|i| matches!(i, SecretInput::OAuthToken(_))),
         "expected gsuite's oauth_token secret"
     );
+}
+
+mod source_policy {
+    use clap::Parser;
+
+    use centaur_iron_proxy::{OnePasswordVault, SourcePolicy};
+
+    use crate::{Cli, build_source_policy};
+
+    fn policy(flags: &[&str]) -> eyre::Result<SourcePolicy> {
+        let mut argv = vec![
+            "centaur-perms",
+            "--iron-control-url",
+            "http://console.invalid",
+            "--iron-control-api-key",
+            "iak_test",
+        ];
+        argv.extend_from_slice(flags);
+        argv.extend(["secrets", "list"]);
+        build_source_policy(&Cli::try_parse_from(argv).unwrap())
+    }
+
+    #[test]
+    fn the_default_policy_is_env() {
+        assert_eq!(policy(&[]).unwrap(), SourcePolicy::Env);
+    }
+
+    #[test]
+    fn onepassword_uses_the_vault_and_ttl() {
+        assert_eq!(
+            policy(&[
+                "--source-policy",
+                "onepassword",
+                "--op-vault",
+                "Engineering",
+                "--op-ttl",
+                "1m",
+            ])
+            .unwrap(),
+            SourcePolicy::OnePassword(OnePasswordVault::new("Engineering", "1m"))
+        );
+        assert_eq!(
+            policy(&[
+                "--source-policy",
+                "onepassword-connect",
+                "--op-vault",
+                "Engineering"
+            ])
+            .unwrap(),
+            SourcePolicy::OnePasswordConnect(OnePasswordVault::new("Engineering", "10m"))
+        );
+    }
+
+    #[test]
+    fn onepassword_needs_a_vault() {
+        assert!(policy(&["--source-policy", "onepassword-connect"]).is_err());
+    }
 }

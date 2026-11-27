@@ -13,7 +13,7 @@ use centaur_iron_control::{
     BrokerCredentialInput, Grant, GrantSecret, Grantee, IdentityInput, PrincipalInput, Role,
     RoleSecretWriter, RoleSpec, SECRET_TYPES, grant_inputs_to_role, managed_labels,
 };
-use centaur_iron_proxy::SourcePolicy;
+use centaur_iron_proxy::{OnePasswordVault, SourcePolicy};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eyre::{Result, bail};
 
@@ -886,18 +886,16 @@ fn print_identities<'a>(
 }
 
 fn build_source_policy(cli: &Cli) -> Result<SourcePolicy> {
+    let vault = || {
+        let vault = cli.op_vault.clone().ok_or_else(|| {
+            eyre::eyre!("--op-vault is required for --source-policy onepassword*")
+        })?;
+        Ok::<_, eyre::Report>(OnePasswordVault::new(vault, cli.op_ttl.clone()))
+    };
     Ok(match cli.source_policy {
-        SourcePolicyArg::Env => SourcePolicy::env(),
-        SourcePolicyArg::Onepassword | SourcePolicyArg::OnepasswordConnect => {
-            let vault = cli.op_vault.clone().ok_or_else(|| {
-                eyre::eyre!("--op-vault is required for --source-policy onepassword*")
-            })?;
-            if cli.source_policy == SourcePolicyArg::Onepassword {
-                SourcePolicy::onepassword(vault, cli.op_ttl.clone())
-            } else {
-                SourcePolicy::onepassword_connect(vault, cli.op_ttl.clone())
-            }
-        }
+        SourcePolicyArg::Env => SourcePolicy::Env,
+        SourcePolicyArg::Onepassword => SourcePolicy::OnePassword(vault()?),
+        SourcePolicyArg::OnepasswordConnect => SourcePolicy::OnePasswordConnect(vault()?),
     })
 }
 

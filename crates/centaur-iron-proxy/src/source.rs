@@ -1,44 +1,25 @@
 use strum::EnumString;
 
-/// How a tool secret's placeholder resolves into an iron-control secret source.
-/// The variant fields (`op_vault`, `ttl`) parameterize 1Password refs; consumers
-/// (`centaur-iron-control`'s registry, `centaur-perms`' translator) read these
-/// directly to build the right [`crate::SourceKind`]-specific source.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourcePolicy {
-    pub kind: SourceKind,
-    pub op_vault: String,
-    pub ttl: String,
+/// Where iron-proxy resolves the real value of a secret placeholder.
+///
+/// Each variant holds only the settings of its own source. The registry of
+/// `centaur-iron-control` and the translator of `centaur-perms` turn a
+/// placeholder into the matching iron-control secret source.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SourcePolicy {
+    /// The environment variable of the iron-proxy container that the
+    /// placeholder names.
+    #[default]
+    Env,
+    /// The vault item that the placeholder names, read with a 1Password
+    /// service account.
+    OnePassword(OnePasswordVault),
+    /// The vault item that the placeholder names, read through 1Password
+    /// Connect.
+    OnePasswordConnect(OnePasswordVault),
 }
 
-impl SourcePolicy {
-    pub fn env() -> Self {
-        Self::new(SourceKind::Env, "ai-agents", "10m")
-    }
-
-    pub fn onepassword(op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
-        Self::new(SourceKind::OnePassword, op_vault, ttl)
-    }
-
-    pub fn onepassword_connect(op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
-        Self::new(SourceKind::OnePasswordConnect, op_vault, ttl)
-    }
-
-    fn new(kind: SourceKind, op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
-        Self {
-            kind,
-            op_vault: op_vault.into(),
-            ttl: ttl.into(),
-        }
-    }
-}
-
-impl Default for SourcePolicy {
-    fn default() -> Self {
-        Self::env()
-    }
-}
-
+/// The names of the secret sources in the deployment settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, EnumString)]
 pub enum SourceKind {
     #[strum(serialize = "env")]
@@ -47,4 +28,22 @@ pub enum SourceKind {
     OnePassword,
     #[strum(serialize = "onepassword-connect")]
     OnePasswordConnect,
+}
+
+/// A 1Password vault. Each item holds its value in its `credential` field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OnePasswordVault {
+    /// The name or the ID of the vault.
+    pub name: String,
+    /// How long iron-proxy keeps a value before it reads the item again.
+    pub ttl: String,
+}
+
+impl OnePasswordVault {
+    pub fn new(name: impl Into<String>, ttl: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ttl: ttl.into(),
+        }
+    }
 }

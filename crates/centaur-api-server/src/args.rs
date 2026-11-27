@@ -22,8 +22,8 @@ use centaur_iron_control::{
     SessionRegistrar, register_role,
 };
 use centaur_iron_proxy::{
-    ProxyFragment, SourceKind, SourcePolicy, bedrock_enabled, custom_provider_auth_fragments,
-    harness_auth_fragment, infra_fragment,
+    OnePasswordVault, ProxyFragment, SourceKind, SourcePolicy, bedrock_enabled,
+    custom_provider_auth_fragments, harness_auth_fragment, infra_fragment,
 };
 use centaur_sandbox_agent_k8s::{
     AgentSandboxBackend, AgentSandboxConfig, DeploymentRef, GitHubTokenRef, IronControlSettings,
@@ -2615,10 +2615,11 @@ struct IronProxySourceArgs {
 
 impl IronProxySourceArgs {
     fn policy(&self) -> SourcePolicy {
-        SourcePolicy {
-            kind: self.source,
-            op_vault: self.op_vault.clone(),
-            ttl: self.secret_ttl.clone(),
+        let vault = || OnePasswordVault::new(self.op_vault.clone(), self.secret_ttl.clone());
+        match self.source {
+            SourceKind::Env => SourcePolicy::Env,
+            SourceKind::OnePassword => SourcePolicy::OnePassword(vault()),
+            SourceKind::OnePasswordConnect => SourcePolicy::OnePasswordConnect(vault()),
         }
     }
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
-use centaur_iron_proxy::{ProxyFragment, SourceKind, SourcePolicy};
+use centaur_iron_proxy::{ProxyFragment, SourcePolicy};
 use centaur_sandbox_core::{
     ResourceRequirements, SandboxError, SandboxId, SandboxResult, SandboxSpec,
 };
@@ -1964,8 +1964,8 @@ fn proxy_egress_rules(
         ));
     }
     if matches!(
-        iron_proxy.source_policy.kind,
-        SourceKind::OnePasswordConnect
+        iron_proxy.source_policy,
+        SourcePolicy::OnePasswordConnect(_)
     ) {
         rules.push(egress_to(
             vec![pod_peer(BTreeMap::from([(
