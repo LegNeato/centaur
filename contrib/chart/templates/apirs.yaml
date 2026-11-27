@@ -593,6 +593,20 @@ spec:
               value: {{ .Values.ironProxy.secretSource | quote }}
             - name: FIREWALL_MANAGER_SECRET_TTL
               value: {{ .Values.ironProxy.secretTtl | quote }}
+{{- if eq .Values.ironProxy.secretSource "aws-secrets-manager" }}
+            - name: FIREWALL_MANAGER_AWS_REGION
+              value: {{ .Values.ironProxy.awsSecretsManager.region | quote }}
+            - name: FIREWALL_MANAGER_AWS_SECRET_PREFIX
+              value: {{ .Values.ironProxy.awsSecretsManager.secretPrefix | quote }}
+{{- with .Values.ironProxy.awsSecretsManager.vpcEndpointCidrs }}
+            - name: KUBERNETES_IRON_PROXY_AWS_ENDPOINT_CIDRS
+              value: {{ join "," . | quote }}
+{{- end }}
+{{- end }}
+{{- with include "centaur.ironProxyServiceAccountName" . }}
+            - name: KUBERNETES_IRON_PROXY_SERVICE_ACCOUNT
+              value: {{ . | quote }}
+{{- end }}
 {{- if .Values.apiRs.opVault }}
             - name: OP_VAULT
               value: {{ .Values.apiRs.opVault | quote }}

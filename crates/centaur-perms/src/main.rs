@@ -13,7 +13,9 @@ use centaur_iron_control::{
     BrokerCredentialInput, Grant, GrantSecret, Grantee, IdentityInput, PrincipalInput, Role,
     RoleSecretWriter, RoleSpec, SECRET_TYPES, grant_inputs_to_role, managed_labels,
 };
-use centaur_iron_proxy::{OnePasswordVault, SourcePolicy};
+use centaur_iron_proxy::{
+    AwsSecretsManager, DEFAULT_AWS_SECRET_PREFIX, OnePasswordVault, SourcePolicy,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eyre::{Result, bail};
 
@@ -56,9 +58,19 @@ struct Cli {
     #[arg(long)]
     op_vault: Option<String>,
 
-    /// 1Password item TTL.
-    #[arg(long, default_value = "10m")]
-    op_ttl: String,
+    /// AWS region of the secrets (required for
+    /// `--source-policy aws-secrets-manager`).
+    #[arg(long)]
+    aws_region: Option<String>,
+
+    /// The text before the placeholder in the name of each AWS secret.
+    #[arg(long, default_value = DEFAULT_AWS_SECRET_PREFIX)]
+    aws_secret_prefix: String,
+
+    /// How long iron-proxy keeps a 1Password or AWS value before it reads the
+    /// value again.
+    #[arg(long, alias = "op-ttl", default_value = "10m")]
+    secret_ttl: String,
 
     #[command(subcommand)]
     command: Command,
@@ -69,6 +81,7 @@ enum SourcePolicyArg {
     Env,
     Onepassword,
     OnepasswordConnect,
+    AwsSecretsManager,
 }
 
 #[derive(Subcommand, Debug)]
@@ -890,12 +903,22 @@ fn build_source_policy(cli: &Cli) -> Result<SourcePolicy> {
         let vault = cli.op_vault.clone().ok_or_else(|| {
             eyre::eyre!("--op-vault is required for --source-policy onepassword*")
         })?;
-        Ok::<_, eyre::Report>(OnePasswordVault::new(vault, cli.op_ttl.clone()))
+        Ok::<_, eyre::Report>(OnePasswordVault::new(vault, cli.secret_ttl.clone()))
     };
     Ok(match cli.source_policy {
         SourcePolicyArg::Env => SourcePolicy::Env,
         SourcePolicyArg::Onepassword => SourcePolicy::OnePassword(vault()?),
         SourcePolicyArg::OnepasswordConnect => SourcePolicy::OnePasswordConnect(vault()?),
+        SourcePolicyArg::AwsSecretsManager => {
+            let region = cli.aws_region.clone().ok_or_else(|| {
+                eyre::eyre!("--aws-region is required for --source-policy aws-secrets-manager")
+            })?;
+            SourcePolicy::AwsSecretsManager(AwsSecretsManager::new(
+                region,
+                cli.aws_secret_prefix.clone(),
+                cli.secret_ttl.clone(),
+            )?)
+        }
     })
 }
 

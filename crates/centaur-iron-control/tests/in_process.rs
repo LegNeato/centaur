@@ -11,8 +11,9 @@ use centaur_iron_control::{
     AwsAuthSecretInput, GcpAuthSecretInput, GcpIdTokenSecretInput, GrantSecret, Grantee,
     IdentityInput, IronControlClient, IronControlError, OAuthTokenSecretInput, PgDsnSecretInput,
     PrincipalInput, ReplaceConfig, RequestRule, SecretSource, SessionRegistrar,
-    SlackChannelPermissionInput, StaticSecretInput,
+    SlackChannelPermissionInput, StaticSecretInput, source_from_placeholder,
 };
+use centaur_iron_proxy::{AwsSecretsManager, SourcePolicy};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -360,6 +361,59 @@ async fn in_process_client_upserts_every_secret_kind_the_registrar_uses() {
 }
 
 /// A registrar, and unique Slack team/user/channel IDs.
+fn static_secret(unique: &str, source: SecretSource) -> StaticSecretInput {
+    StaticSecretInput {
+        foreign_id: format!("aws-secret-{unique}"),
+        name: "AWS secret".to_owned(),
+        description: None,
+        labels: BTreeMap::new(),
+        inject_config: None,
+        replace_config: Some(ReplaceConfig {
+            proxy_value: format!("AWS_TOKEN_{}", unique.to_uppercase()),
+            match_headers: vec!["Authorization".to_owned()],
+            match_body: false,
+            match_path: false,
+            match_query: false,
+            require: false,
+        }),
+        source,
+        rules: vec![RequestRule::host("api.example.com")],
+    }
+}
+
+#[tokio::test]
+async fn in_process_client_accepts_the_aws_secrets_manager_source() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let client = IronControlClient::new(pool);
+    let unique = unique();
+    let policy = SourcePolicy::AwsSecretsManager(
+        AwsSecretsManager::new("us-east-1", "centaur/", "10m").unwrap(),
+    );
+
+    for json_key in [None, Some("password")] {
+        let source = source_from_placeholder(&policy, "WAREHOUSE_TOKEN", json_key);
+        let unique = format!("{unique}-{}", json_key.unwrap_or("plain"));
+        let secret = client
+            .upsert_static_secret(&static_secret(&unique, source))
+            .await
+            .expect("the Console accepts the source of the aws-secrets-manager policy");
+        assert!(secret.id.starts_with("ssr_"));
+    }
+
+    // The Console checks the keys of the source. A key that aws_sm does not
+    // know is an error.
+    let mut source = source_from_placeholder(&policy, "WAREHOUSE_TOKEN", None);
+    source.config["prefix"] = json!("centaur/");
+    assert!(
+        client
+            .upsert_static_secret(&static_secret(&format!("{unique}-bad"), source))
+            .await
+            .is_err()
+    );
+}
+
 async fn registrar(pool: &PgPool) -> (SessionRegistrar, IronControlClient, [String; 3]) {
     let unique = unique();
     let client = IronControlClient::new(pool.clone());

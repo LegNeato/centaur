@@ -175,6 +175,9 @@ spec:
       labels:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "codemode-iron-proxy") | nindent 8 }}
     spec:
+{{- with include "centaur.ironProxyServiceAccountName" . }}
+      serviceAccountName: {{ . | quote }}
+{{- end }}
       automountServiceAccountToken: false
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
@@ -199,6 +202,12 @@ spec:
 {{- if eq .Values.ironProxy.secretSource "onepassword-connect" }}
             - name: OP_CONNECT_HOST
               value: {{ include "centaur.onepasswordConnectUrl" . | quote }}
+{{- end }}
+{{- if eq .Values.ironProxy.secretSource "aws-secrets-manager" }}
+            # The AWS SDK of iron-proxy also needs the region for the STS call
+            # of a web identity.
+            - name: AWS_REGION
+              value: {{ .Values.ironProxy.awsSecretsManager.region | quote }}
 {{- end }}
 {{ include "centaur.codemodeSecretEnv" (dict "root" . "name" "IRON_TENANT_PUBLIC_KEYS" "key" "token-public-key") | indent 12 }}
 {{ include "centaur.codemodeSecretEnv" (dict "root" . "name" "IRON_TENANCY_CONTROL_PLANE_TOKEN" "key" "sync-token") | indent 12 }}
@@ -349,6 +358,29 @@ spec:
       ports:
         - protocol: TCP
           port: {{ include "centaur.onepasswordConnectPort" . }}
+{{- end }}
+{{- if eq .Values.ironProxy.secretSource "aws-secrets-manager" }}
+    # The EKS Pod Identity agent serves the AWS credentials of the pod on
+    # these link-local addresses of its node.
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+        - ipBlock:
+            cidr: fd00:ec2::23/128
+      ports:
+        - protocol: TCP
+          port: 80
+{{- with .Values.ironProxy.awsSecretsManager.vpcEndpointCidrs }}
+    # The VPC endpoints of Secrets Manager and STS have private addresses.
+    - to:
+{{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
 {{- end }}
     # Public addresses only: private, loopback, link-local, and reserved
     # ranges are excluded, as in the per-sandbox iron-proxy policies.

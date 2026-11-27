@@ -87,6 +87,15 @@ const PROXY_ACK_PROBE_WINDOW: Duration = Duration::from_secs(2);
 const REASSIGN_FRESH_SYNCS: usize = 2;
 const COLD_CREATE_FRESH_SYNCS: usize = 0;
 const PROXY_REASSIGN_FALLBACK_DELAY: Duration = Duration::from_secs(6);
+// The EKS Pod Identity agent serves the AWS credentials of a pod on these
+// link-local addresses of its node. The public upstream rule excludes
+// link-local addresses.
+const EKS_POD_IDENTITY_AGENT_CIDRS: [&str; 2] = ["169.254.170.23/32", "fd00:ec2::23/128"];
+const EKS_POD_IDENTITY_AGENT_PORT: u16 = 80;
+// AWS VPC interface endpoints serve their APIs over HTTPS.
+const AWS_ENDPOINT_PORT: u16 = 443;
+// The ServiceAccount that Kubernetes gives a pod that names none.
+const DEFAULT_SERVICE_ACCOUNT: &str = "default";
 
 #[derive(Clone, Debug)]
 pub struct IronProxyConfig {
@@ -116,6 +125,10 @@ pub struct IronProxyConfig {
     pub database_pod_labels: BTreeMap<String, String>,
     pub database_namespace: Option<String>,
     pub database_port: u16,
+    /// Address ranges of the VPC endpoints of Secrets Manager and STS for an
+    /// AWS secret source. Proxies may reach them on port 443. The public
+    /// upstream rule excludes the private ranges of a VPC.
+    pub aws_endpoint_cidrs: Vec<String>,
     pub op_connect_app_name: String,
     pub op_connect_port: u16,
     pub api_pod_labels: BTreeMap<String, String>,
@@ -126,6 +139,9 @@ pub struct IronProxyConfig {
     pub company_context_url: Option<String>,
     pub company_context_pod_labels: BTreeMap<String, String>,
     pub resources: Option<ResourceRequirements>,
+    /// The ServiceAccount of the proxy pods. `None` keeps the default
+    /// ServiceAccount of the namespace.
+    pub service_account_name: Option<String>,
 }
 
 impl IronProxyConfig {
@@ -151,6 +167,7 @@ impl IronProxyConfig {
             database_pod_labels: BTreeMap::new(),
             database_namespace: None,
             database_port: 5432,
+            aws_endpoint_cidrs: Vec::new(),
             op_connect_app_name: "onepassword-connect".to_owned(),
             op_connect_port: 8080,
             api_pod_labels: BTreeMap::from([(
@@ -171,6 +188,7 @@ impl IronProxyConfig {
                 "company-context".to_owned(),
             )]),
             resources: None,
+            service_account_name: None,
         }
     }
 }
@@ -1180,7 +1198,26 @@ impl AgentSandboxBackend {
             .list(&params)
             .await
             .map_err(|err| map_kube_error("list iron-proxy pods", err))?;
-        if !pods.items.iter().any(pod_running) {
+        let running: Vec<&Pod> = pods.items.iter().filter(|pod| pod_running(pod)).collect();
+        if running.is_empty() {
+            return Ok(false);
+        }
+        // A pod from before a ServiceAccount change keeps its old identity. A
+        // new pod gets the configured one.
+        let service_account = self
+            .config
+            .iron_proxy
+            .as_ref()
+            .and_then(|iron_proxy| iron_proxy.service_account_name.as_deref());
+        if !running
+            .iter()
+            .any(|pod| pod_has_service_account(pod, service_account))
+        {
+            tracing::warn!(
+                sandbox_id = id.as_str(),
+                configured_service_account = ?service_account,
+                "iron-proxy pod has another ServiceAccount than the configuration"
+            );
             return Ok(false);
         }
         match self.services().get(&iron_proxy_service_name(id)).await {
@@ -1589,6 +1626,9 @@ fn build_iron_proxy_pod(
             annotations,
         ),
         spec: Some(PodSpec {
+            // An EKS web identity or Pod Identity projects its own token. The
+            // pod needs no Kubernetes API token.
+            service_account_name: iron_proxy.service_account_name.clone(),
             automount_service_account_token: Some(false),
             // OnFailure so a crashed/OOM-killed proxy container is restarted
             // in place (same pod IP, Service keeps routing) instead of leaving
@@ -1963,6 +2003,25 @@ fn proxy_egress_rules(
             vec![network_port(iron_proxy.database_port)],
         ));
     }
+    if matches!(iron_proxy.source_policy, SourcePolicy::AwsSecretsManager(_)) {
+        rules.push(egress_to(
+            EKS_POD_IDENTITY_AGENT_CIDRS
+                .iter()
+                .map(|cidr| ip_block_peer(cidr))
+                .collect(),
+            vec![network_port(EKS_POD_IDENTITY_AGENT_PORT)],
+        ));
+        if !iron_proxy.aws_endpoint_cidrs.is_empty() {
+            rules.push(egress_to(
+                iron_proxy
+                    .aws_endpoint_cidrs
+                    .iter()
+                    .map(|cidr| ip_block_peer(cidr))
+                    .collect(),
+                vec![network_port(AWS_ENDPOINT_PORT)],
+            ));
+        }
+    }
     if matches!(
         iron_proxy.source_policy,
         SourcePolicy::OnePasswordConnect(_)
@@ -2245,6 +2304,22 @@ fn host_from_url(value: String) -> Option<String> {
 
 fn url_port(value: &str) -> Option<u16> {
     authority(value)?.rsplit_once(':')?.1.parse().ok()
+}
+
+/// Returns true when `pod` runs as `service_account`. `None` names the default
+/// ServiceAccount of the namespace.
+fn pod_has_service_account(pod: &Pod, service_account: Option<&str>) -> bool {
+    let name = |name: Option<&str>| {
+        name.map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(DEFAULT_SERVICE_ACCOUNT)
+            .to_owned()
+    };
+    let actual = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.service_account_name.as_deref());
+    name(actual) == name(service_account)
 }
 
 fn pod_running(pod: &Pod) -> bool {
@@ -2806,6 +2881,190 @@ mod tests {
             Some(&Quantity("1".to_owned()))
         );
         assert!(!limits.contains_key("cpu"));
+    }
+
+    fn test_sync() -> ProxySyncEnv {
+        ProxySyncEnv {
+            proxy_id: "iprx_test".to_owned(),
+            control_url: "http://console:3000".to_owned(),
+            token: "proxy-token".to_owned(),
+        }
+    }
+
+    fn aws_policy() -> SourcePolicy {
+        SourcePolicy::AwsSecretsManager(
+            centaur_iron_proxy::AwsSecretsManager::new("us-east-1", "centaur/", "10m").unwrap(),
+        )
+    }
+
+    fn allows_pod_identity_agent(rules: &[NetworkPolicyEgressRule]) -> bool {
+        rules.iter().any(|rule| {
+            let cidrs: Vec<&str> = rule
+                .to
+                .iter()
+                .flatten()
+                .filter_map(|peer| peer.ip_block.as_ref().map(|block| block.cidr.as_str()))
+                .collect();
+            cidrs == EKS_POD_IDENTITY_AGENT_CIDRS
+                && rule.ports.as_ref().is_some_and(|ports| {
+                    ports.iter().any(|port| {
+                        port.port == Some(IntOrString::Int(i32::from(EKS_POD_IDENTITY_AGENT_PORT)))
+                    })
+                })
+        })
+    }
+
+    fn pod_with_service_account(name: Option<&str>) -> Pod {
+        Pod {
+            spec: Some(PodSpec {
+                service_account_name: name.map(ToOwned::to_owned),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pod_with_the_configured_service_account_is_current() {
+        let pod = pod_with_service_account(Some("centaur-iron-proxy"));
+        assert!(pod_has_service_account(&pod, Some("centaur-iron-proxy")));
+    }
+
+    #[test]
+    fn a_pod_with_the_default_service_account_matches_no_setting() {
+        // Kubernetes writes "default" into a pod that names no ServiceAccount.
+        for pod in [
+            pod_with_service_account(Some("default")),
+            pod_with_service_account(None),
+        ] {
+            assert!(pod_has_service_account(&pod, None));
+            assert!(pod_has_service_account(&pod, Some(" ")));
+        }
+    }
+
+    #[test]
+    fn a_pod_with_another_service_account_is_stale() {
+        assert!(!pod_has_service_account(
+            &pod_with_service_account(Some("default")),
+            Some("centaur-iron-proxy")
+        ));
+        assert!(!pod_has_service_account(
+            &pod_with_service_account(Some("centaur-iron-proxy")),
+            None
+        ));
+        assert!(!pod_has_service_account(
+            &pod_with_service_account(Some("old")),
+            Some("centaur-iron-proxy")
+        ));
+    }
+
+    #[test]
+    fn iron_proxy_pod_uses_the_configured_service_account() {
+        let id = SandboxId::new("asbx-test");
+        let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        iron_proxy.service_account_name = Some("centaur-iron-proxy".to_owned());
+
+        let pod =
+            build_iron_proxy_pod(&id, &iron_proxy, &resolved(), &test_sync(), no_scheduling());
+
+        let spec = pod.spec.unwrap();
+        assert_eq!(
+            spec.service_account_name.as_deref(),
+            Some("centaur-iron-proxy")
+        );
+        assert_eq!(spec.automount_service_account_token, Some(false));
+    }
+
+    #[test]
+    fn iron_proxy_pod_keeps_the_default_service_account_without_a_setting() {
+        let id = SandboxId::new("asbx-test");
+        let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+
+        let pod =
+            build_iron_proxy_pod(&id, &iron_proxy, &resolved(), &test_sync(), no_scheduling());
+
+        assert_eq!(pod.spec.unwrap().service_account_name, None);
+    }
+
+    #[test]
+    fn aws_secret_source_lets_the_proxy_reach_the_pod_identity_agent() {
+        let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        iron_proxy.source_policy = aws_policy();
+
+        let rules = proxy_egress_rules(&iron_proxy, &[control_target()]);
+
+        assert!(allows_pod_identity_agent(&rules));
+    }
+
+    fn allows_cidrs_on_port(rules: &[NetworkPolicyEgressRule], cidrs: &[&str], port: u16) -> bool {
+        rules.iter().any(|rule| {
+            let rule_cidrs: Vec<&str> = rule
+                .to
+                .iter()
+                .flatten()
+                .filter_map(|peer| peer.ip_block.as_ref().map(|block| block.cidr.as_str()))
+                .collect();
+            rule_cidrs == cidrs
+                && rule.ports.as_ref().is_some_and(|ports| {
+                    ports.iter().any(|policy_port| {
+                        policy_port.port == Some(IntOrString::Int(i32::from(port)))
+                    })
+                })
+        })
+    }
+
+    #[test]
+    fn aws_secret_source_lets_the_proxy_reach_the_vpc_endpoints() {
+        let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        iron_proxy.source_policy = aws_policy();
+        iron_proxy.aws_endpoint_cidrs = vec!["10.0.8.0/24".to_owned(), "fd00:8::/64".to_owned()];
+
+        let rules = proxy_egress_rules(&iron_proxy, &[control_target()]);
+
+        assert!(allows_cidrs_on_port(
+            &rules,
+            &["10.0.8.0/24", "fd00:8::/64"],
+            AWS_ENDPOINT_PORT
+        ));
+    }
+
+    #[test]
+    fn aws_secret_source_without_vpc_endpoints_adds_no_endpoint_rule() {
+        let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        iron_proxy.source_policy = aws_policy();
+
+        let rules = proxy_egress_rules(&iron_proxy, &[control_target()]);
+
+        let https = IntOrString::Int(i32::from(AWS_ENDPOINT_PORT));
+        let https_rules: Vec<_> = rules
+            .iter()
+            .filter(|rule| {
+                rule.ports
+                    .iter()
+                    .flatten()
+                    .any(|port| port.port.as_ref() == Some(&https))
+            })
+            .collect();
+        assert_eq!(https_rules.len(), 1, "{https_rules:?}");
+        assert!(rule_allows_public_port(https_rules[0], AWS_ENDPOINT_PORT));
+    }
+
+    #[test]
+    fn other_secret_sources_do_not_reach_the_pod_identity_agent() {
+        let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
+        for policy in [
+            SourcePolicy::Env,
+            SourcePolicy::OnePassword(centaur_iron_proxy::OnePasswordVault::new("v", "10m")),
+            SourcePolicy::OnePasswordConnect(centaur_iron_proxy::OnePasswordVault::new("v", "10m")),
+        ] {
+            iron_proxy.source_policy = policy;
+            let rules = proxy_egress_rules(&iron_proxy, &[control_target()]);
+            assert!(
+                !allows_pod_identity_agent(&rules),
+                "{:?}",
+                iron_proxy.source_policy
+            );
+        }
     }
 
     #[test]

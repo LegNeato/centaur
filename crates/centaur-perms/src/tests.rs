@@ -980,7 +980,7 @@ fn real_gsuite_tool_parses_oauth() {
 mod source_policy {
     use clap::Parser;
 
-    use centaur_iron_proxy::{OnePasswordVault, SourcePolicy};
+    use centaur_iron_proxy::{AwsSecretsManager, OnePasswordVault, SourcePolicy};
 
     use crate::{Cli, build_source_policy};
 
@@ -1000,6 +1000,61 @@ mod source_policy {
     #[test]
     fn the_default_policy_is_env() {
         assert_eq!(policy(&[]).unwrap(), SourcePolicy::Env);
+    }
+
+    #[test]
+    fn aws_secrets_manager_uses_the_region_prefix_and_ttl() {
+        assert_eq!(
+            policy(&[
+                "--source-policy",
+                "aws-secrets-manager",
+                "--aws-region",
+                "us-east-2",
+                "--aws-secret-prefix",
+                "prod/",
+                "--secret-ttl",
+                "5m",
+            ])
+            .unwrap(),
+            SourcePolicy::AwsSecretsManager(
+                AwsSecretsManager::new("us-east-2", "prod/", "5m").unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn aws_secrets_manager_defaults_to_the_centaur_prefix() {
+        let SourcePolicy::AwsSecretsManager(aws) = policy(&[
+            "--source-policy",
+            "aws-secrets-manager",
+            "--aws-region",
+            "us-east-2",
+        ])
+        .unwrap() else {
+            panic!("expected the AWS policy");
+        };
+        assert_eq!(aws.secret_id("GITHUB_TOKEN"), "centaur/GITHUB_TOKEN");
+    }
+
+    #[test]
+    fn aws_secrets_manager_needs_a_region() {
+        let error = policy(&["--source-policy", "aws-secrets-manager"]).unwrap_err();
+        assert!(error.to_string().contains("--aws-region"), "{error}");
+    }
+
+    #[test]
+    fn aws_secrets_manager_rejects_an_invalid_prefix() {
+        assert!(
+            policy(&[
+                "--source-policy",
+                "aws-secrets-manager",
+                "--aws-region",
+                "us-east-2",
+                "--aws-secret-prefix",
+                "has space/",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

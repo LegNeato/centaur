@@ -41,8 +41,35 @@ ironProxy:
     - "127.0.0.0/8"
     - "::1/128"
     - "10.42.0.0/16"
+  # Where iron-proxy reads the real value of each credential: env,
+  # onepassword, onepassword-connect, or aws-secrets-manager.
   secretSource: onepassword
+  # How long iron-proxy keeps a 1Password or AWS value before it reads the
+  # value again.
   secretTtl: 10m
+  # The settings of the aws-secrets-manager source. The secret of a credential
+  # is the prefix followed by the placeholder name. The default prefix
+  # therefore gives OPENAI_API_KEY the secret centaur/OPENAI_API_KEY.
+  awsSecretsManager:
+    # The AWS region of the secrets. The aws-secrets-manager source requires
+    # it.
+    region: ""
+    secretPrefix: centaur/
+    # Address ranges of the VPC endpoints of Secrets Manager and STS. A range
+    # can be the subnet of their network interfaces. The iron-proxy pods may
+    # reach them on port 443. Leave it empty when these APIs resolve to
+    # public addresses.
+    vpcEndpointCidrs: []
+  # The ServiceAccount of the iron-proxy pods. An AWS secret source gets its
+  # AWS identity from it. Annotate it with eks.amazonaws.com/role-arn for
+  # IRSA. Or associate it with an EKS Pod Identity role. An empty name with
+  # create=false keeps the default ServiceAccount.
+  serviceAccount:
+    create: false
+    # The name of the ServiceAccount. Empty with create=true uses
+    # <release>-centaur-iron-proxy.
+    name: ""
+    annotations: {}
   # Requests/limits for each per-sandbox iron-proxy pod (k8s resources map).
   resources: {}
 
@@ -347,7 +374,8 @@ sandbox:
   runtimeClassName: ""
   # ServiceAccount for sandbox pods (session, warm, and workflow-host), e.g.
   # for cloud workload identity (EKS IRSA). Must already exist in the release
-  # namespace; iron-proxy pods are unaffected, and the Kubernetes API token
+  # namespace; iron-proxy pods are unaffected (ironProxy.serviceAccount sets
+  # theirs), and the Kubernetes API token
   # stays unmounted (automountServiceAccountToken remains false). Changing
   # this value drains retained sandbox pods before api-rs enables reuse.
   serviceAccountName: ""

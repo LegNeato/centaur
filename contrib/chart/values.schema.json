@@ -114,8 +114,35 @@
             "pgPort": { "type": "integer" }
           }
         },
-        "secretSource": { "type": "string" },
+        "secretSource": {
+          "type": "string",
+          "enum": ["env", "onepassword", "onepassword-connect", "aws-secrets-manager"]
+        },
         "secretTtl": { "type": "string" },
+        "awsSecretsManager": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "region": { "type": "string" },
+            "secretPrefix": { "type": "string", "pattern": "^[A-Za-z0-9/_+=.@-]*$" },
+            "vpcEndpointCidrs": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": { "type": "string" },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
         "upstreamDenyCidrs": {
           "type": "array",
           "items": { "type": "string" }
