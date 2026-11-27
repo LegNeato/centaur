@@ -12,7 +12,8 @@ CASES=0
 STATE=""
 
 OP=(OP_SERVICE_ACCOUNT_TOKEN=op-token OP_VAULT=vault)
-NOTE="has no Slack keys"
+SLACK_NOTE="has no Slack keys"
+OP_NOTE="has no 1Password token"
 
 # Starts a case with a new, empty cluster.
 fresh() {
@@ -47,8 +48,9 @@ secret_exists() {
   [[ -e "$STATE/centaur-infra-env.json" ]] && echo yes || echo no
 }
 
+# Prints how many times the script printed the note $1.
 notes() {
-  grep -c "$NOTE" "$WORK/err"
+  grep -c "$1" "$WORK/err"
 }
 
 check() {
@@ -67,7 +69,7 @@ check "OP_VAULT" "$(value OP_VAULT)" vault
 check "SLACK_BOT_TOKEN" "$(value SLACK_BOT_TOKEN)" "<absent>"
 check "SLACK_SIGNING_SECRET" "$(value SLACK_SIGNING_SECRET)" "<absent>"
 check "SLACKBOT_API_KEY" "$(value SLACKBOT_API_KEY)" "<absent>"
-check "note" "$(notes)" 1
+check "note" "$(notes "$SLACK_NOTE")" 1
 
 next "a later run adds the Slack keys to the Secret"
 bootstrap "${OP[@]}" SLACK_BOT_TOKEN=xoxb-1 SLACK_SIGNING_SECRET=signing-1
@@ -76,7 +78,7 @@ check "SLACK_BOT_TOKEN" "$(value SLACK_BOT_TOKEN)" xoxb-1
 check "SLACK_SIGNING_SECRET" "$(value SLACK_SIGNING_SECRET)" signing-1
 generated="$(value SLACKBOT_API_KEY)"
 check "generated SLACKBOT_API_KEY" "$(grep -cE '^[0-9a-f]{64}$' <<<"$generated")" 1
-check "note" "$(notes)" 0
+check "note" "$(notes "$SLACK_NOTE")" 0
 
 next "a later run replaces the Slack credentials and keeps the api-rs key"
 bootstrap "${OP[@]}" SLACK_BOT_TOKEN=xoxb-2 SLACK_SIGNING_SECRET=signing-2 SLACKBOT_API_KEY=other
@@ -90,7 +92,7 @@ bootstrap "${OP[@]}"
 check "exit status" "$?" 0
 check "SLACK_BOT_TOKEN" "$(value SLACK_BOT_TOKEN)" xoxb-2
 check "SLACKBOT_API_KEY" "$(value SLACKBOT_API_KEY)" "$generated"
-check "note" "$(notes)" 0
+check "note" "$(notes "$SLACK_NOTE")" 0
 
 fresh "the Slack variables seed the Slack keys of a new Secret"
 bootstrap "${OP[@]}" SLACK_BOT_TOKEN=xoxb-1 SLACK_SIGNING_SECRET=signing-1 SLACKBOT_API_KEY=given
@@ -98,7 +100,7 @@ check "exit status" "$?" 0
 check "SLACK_BOT_TOKEN" "$(value SLACK_BOT_TOKEN)" xoxb-1
 check "SLACK_SIGNING_SECRET" "$(value SLACK_SIGNING_SECRET)" signing-1
 check "SLACKBOT_API_KEY" "$(value SLACKBOT_API_KEY)" given
-check "note" "$(notes)" 0
+check "note" "$(notes "$SLACK_NOTE")" 0
 
 fresh "a token without a signing secret stops the script"
 bootstrap "${OP[@]}" SLACK_BOT_TOKEN=xoxb-1
@@ -112,11 +114,53 @@ check "exit status" "$?" 1
 check "error" "$(cat "$WORK/err")" "FATAL: SLACK_BOT_TOKEN is required in the shell environment"
 check "Secret" "$(secret_exists)" no
 
-fresh "a new Secret still needs the 1Password variables"
-bootstrap SLACK_BOT_TOKEN=xoxb-1 SLACK_SIGNING_SECRET=signing-1
+fresh "no variables create a Secret without 1Password keys"
+bootstrap
+check "exit status" "$?" 0
+check "OP_SERVICE_ACCOUNT_TOKEN" "$(value OP_SERVICE_ACCOUNT_TOKEN)" "<absent>"
+check "OP_VAULT" "$(value OP_VAULT)" "<absent>"
+check "generated CENTAUR_JWT_SIGNING_SECRET" "$(grep -cE '^[0-9a-f]{128}$' <<<"$(value CENTAUR_JWT_SIGNING_SECRET)")" 1
+check "1Password note" "$(notes "$OP_NOTE")" 1
+check "Slack note" "$(notes "$SLACK_NOTE")" 1
+
+next "a 1Password token for a Secret without a vault needs OP_VAULT"
+bootstrap OP_SERVICE_ACCOUNT_TOKEN=op-token
 check "exit status" "$?" 1
-check "error" "$(cat "$WORK/err")" "FATAL: OP_SERVICE_ACCOUNT_TOKEN is required in the shell environment"
+check "error" "$(cat "$WORK/err")" "FATAL: OP_VAULT is required in the shell environment"
+check "OP_SERVICE_ACCOUNT_TOKEN" "$(value OP_SERVICE_ACCOUNT_TOKEN)" "<absent>"
+
+next "a later run adds the 1Password keys to the Secret"
+bootstrap "${OP[@]}"
+check "exit status" "$?" 0
+check "OP_SERVICE_ACCOUNT_TOKEN" "$(value OP_SERVICE_ACCOUNT_TOKEN)" op-token
+check "OP_VAULT" "$(value OP_VAULT)" vault
+check "1Password note" "$(notes "$OP_NOTE")" 0
+
+next "a token for a Secret with a vault needs no OP_VAULT"
+bootstrap OP_SERVICE_ACCOUNT_TOKEN=op-token-2
+check "exit status" "$?" 0
+check "OP_SERVICE_ACCOUNT_TOKEN" "$(value OP_SERVICE_ACCOUNT_TOKEN)" op-token-2
+check "OP_VAULT" "$(value OP_VAULT)" vault
+
+fresh "a service account token without a vault stops the script"
+bootstrap OP_SERVICE_ACCOUNT_TOKEN=op-token
+check "exit status" "$?" 1
+check "error" "$(cat "$WORK/err")" "FATAL: OP_VAULT is required in the shell environment"
 check "Secret" "$(secret_exists)" no
+
+fresh "a Connect token without a vault stops the script"
+bootstrap OP_CONNECT_TOKEN=connect-token
+check "exit status" "$?" 1
+check "error" "$(cat "$WORK/err")" "FATAL: OP_VAULT is required in the shell environment"
+check "Secret" "$(secret_exists)" no
+
+fresh "a Connect token and a vault need no service account token"
+bootstrap OP_CONNECT_TOKEN=connect-token OP_VAULT=vault
+check "exit status" "$?" 0
+check "OP_CONNECT_TOKEN" "$(value OP_CONNECT_TOKEN)" connect-token
+check "OP_VAULT" "$(value OP_VAULT)" vault
+check "OP_SERVICE_ACCOUNT_TOKEN" "$(value OP_SERVICE_ACCOUNT_TOKEN)" "<absent>"
+check "1Password note" "$(notes "$OP_NOTE")" 0
 
 if [[ "$FAILED" == 1 ]]; then
   echo "bootstrap-k8s-secrets.sh tests failed" >&2

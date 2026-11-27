@@ -132,7 +132,6 @@ up() {
   SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN" \
   SLACK_SIGNING_SECRET="$SLACK_SIGNING_SECRET" \
   SLACKBOT_API_KEY="$(openssl rand -hex 32)" \
-  OP_SERVICE_ACCOUNT_TOKEN=unused OP_VAULT=unused \
     contrib/scripts/bootstrap-k8s-secrets.sh --namespace "$NAMESPACE"
   # iron-proxy's env secret source resolves the provider keys from here.
   kubectl -n "$NAMESPACE" patch secret centaur-infra-env --type merge -p \

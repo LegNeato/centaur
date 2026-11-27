@@ -9,9 +9,21 @@ usage() {
 Usage: scripts/bootstrap-k8s-secrets.sh [--namespace NAMESPACE] [--force]
 
 Creates the required local-dev Kubernetes infra Secrets consumed by the Helm chart.
-When creating centaur-infra-env from scratch or with --force, requires
-OP_SERVICE_ACCOUNT_TOKEN and OP_VAULT in the shell environment. Existing Secrets
-are only topped up with newly generated optional keys when absent.
+The script generates the infrastructure keys. Every key from the shell
+environment is optional. A run on an existing Secret writes the credentials
+that the shell environment sets. It also adds each generated key that is
+absent.
+
+Optional 1Password bootstrap (consumed when ironProxy.secretSource is
+onepassword or onepassword-connect):
+  OP_SERVICE_ACCOUNT_TOKEN     the token of the 1Password service account. The
+                               default ironProxy.secretSource=onepassword needs
+                               it. It requires OP_VAULT. Each run overwrites it.
+                               Deploy with ironProxy.secretSource=env when the
+                               Secret has no 1Password token.
+  OP_VAULT                     the 1Password vault name or ID. A 1Password
+                               token requires it when the Secret has no vault.
+                               Each run overwrites it.
 
 Optional Slack ingress bootstrap (consumed when slackbotv2.enabled=true):
   SLACK_BOT_TOKEN              the Bot User OAuth Token of the Slack app. The
@@ -208,11 +220,6 @@ delete_if_forced centaur-firewall-ca
 delete_if_forced centaur-firewall-ca-key
 delete_if_forced centaur-onepassword-connect-credentials
 
-if ! secret_exists centaur-infra-env; then
-  require_env OP_SERVICE_ACCOUNT_TOKEN
-  require_env OP_VAULT
-fi
-
 secret_key_present() {
   local key="$1"
   local value
@@ -221,8 +228,20 @@ secret_key_present() {
   [[ -n "$value" ]]
 }
 
+# A 1Password token is useless without a vault. The vault can come from the
+# shell or from the Secret.
+if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}${OP_CONNECT_TOKEN:-}" ]] && ! secret_key_present OP_VAULT; then
+  require_env OP_VAULT
+fi
+
 if secret_exists centaur-infra-env; then
   patch_data=()
+  if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+    patch_data+=("\"OP_SERVICE_ACCOUNT_TOKEN\":\"$(printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" | base64 | tr -d '\n')\"")
+  fi
+  if [[ -n "${OP_VAULT:-}" ]]; then
+    patch_data+=("\"OP_VAULT\":\"$(printf '%s' "$OP_VAULT" | base64 | tr -d '\n')\"")
+  fi
   if [[ -n "${OP_CONNECT_TOKEN:-}" ]]; then
     patch_data+=("\"OP_CONNECT_TOKEN\":\"$(printf '%s' "$OP_CONNECT_TOKEN" | base64 | tr -d '\n')\"")
   fi
@@ -346,8 +365,6 @@ else
   secret_args=(
     -n "$NAMESPACE" create secret generic centaur-infra-env
     --from-literal=IRON_MANAGEMENT_API_KEY="$(rand_hex)"
-    --from-literal=OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN"
-    --from-literal=OP_VAULT="$OP_VAULT"
     --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
     --from-literal=DATABASE_URL="$DATABASE_URL"
     --from-literal=IRON_CONTROL_DATABASE_URL="$IRON_CONTROL_DATABASE_URL"
@@ -358,6 +375,12 @@ else
     --from-literal=IRON_CONTROL_SECRET_KEY_BASE="$(rand_hex)$(rand_hex)"
     --from-literal=CENTAUR_JWT_SIGNING_SECRET="$(rand_hex)$(rand_hex)"
   )
+  if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+    secret_args+=(--from-literal=OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN")
+  fi
+  if [[ -n "${OP_VAULT:-}" ]]; then
+    secret_args+=(--from-literal=OP_VAULT="$OP_VAULT")
+  fi
   if [[ -n "${SLACK_BOT_TOKEN:-}" ]]; then
     secret_args+=(
       --from-literal=SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN"
@@ -407,6 +430,9 @@ else
   echo "Created Secret centaur-infra-env in namespace $NAMESPACE"
 fi
 
+if ! secret_key_present OP_SERVICE_ACCOUNT_TOKEN && ! secret_key_present OP_CONNECT_TOKEN; then
+  echo "NOTE: Secret centaur-infra-env has no 1Password token. Deploy with ironProxy.secretSource=env. Set OP_SERVICE_ACCOUNT_TOKEN and OP_VAULT and run this script again to add the keys." >&2
+fi
 if ! secret_key_present SLACK_BOT_TOKEN; then
   echo "NOTE: Secret centaur-infra-env has no Slack keys. Deploy with slackbotv2.enabled=false. Set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET and run this script again to add the keys." >&2
 fi

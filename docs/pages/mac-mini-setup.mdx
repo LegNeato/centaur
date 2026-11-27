@@ -92,12 +92,15 @@ add it to the chart with `global.imagePullSecrets`.
 ## 4. Bootstrap secrets
 
 The default local chart expects one infra Secret named `centaur-infra-env`.
-Export the required values before deploying:
+Export the credentials of the 1Password service account before deploying:
 
 ```bash
 export OP_SERVICE_ACCOUNT_TOKEN=...
 export OP_VAULT=...
 ```
+
+[Use Environment Variables](/secrets/environment) describes a deployment
+without 1Password.
 
 Export the credentials of the Slack app to boot Slackbot:
 

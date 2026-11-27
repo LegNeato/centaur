@@ -118,12 +118,18 @@ Install the local command runner:
 brew install just
 ```
 
-For a first-time local boot, Centaur needs these infrastructure secrets in your shell:
+The chart reads model and tool credentials from 1Password by default. Export
+the credentials of the 1Password service account for a first-time local boot:
 
 ```bash
 export OP_SERVICE_ACCOUNT_TOKEN=...
 export OP_VAULT=...
 ```
+
+Set `ironProxy.secretSource: env` in `contrib/chart/values.local.yaml` to read
+the credentials from the Kubernetes Secret instead.
+[Use Environment Variables](docs/pages/secrets/environment.mdx) describes that
+mode.
 
 Export the credentials of the Slack app to boot the Slack ingress:
 
