@@ -10,9 +10,20 @@ Usage: scripts/bootstrap-k8s-secrets.sh [--namespace NAMESPACE] [--force]
 
 Creates the required local-dev Kubernetes infra Secrets consumed by the Helm chart.
 When creating centaur-infra-env from scratch or with --force, requires
-OP_SERVICE_ACCOUNT_TOKEN, OP_VAULT, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET,
-and SLACKBOT_API_KEY in the shell environment. Existing Secrets are only topped
-up with newly generated optional keys when absent.
+OP_SERVICE_ACCOUNT_TOKEN and OP_VAULT in the shell environment. Existing Secrets
+are only topped up with newly generated optional keys when absent.
+
+Optional Slack ingress bootstrap (consumed when slackbotv2.enabled=true):
+  SLACK_BOT_TOKEN              the Bot User OAuth Token of the Slack app. The
+                               script seeds the Slack keys when it is set. Each
+                               run overwrites it. A new value therefore rotates
+                               the token. Deploy with slackbotv2.enabled=false
+                               when the Secret has no Slack keys.
+  SLACK_SIGNING_SECRET         the Signing Secret of the Slack app. It is
+                               required together with SLACK_BOT_TOKEN. Each run
+                               overwrites it.
+  SLACKBOT_API_KEY             bearer the bot sends to api-rs; auto-generated
+                               once when absent (never rotated in place)
 
 Optional 1Password Connect bootstrap (when ironProxy.secretSource is set to
 onepassword-connect in the Helm values):
@@ -168,6 +179,13 @@ if [[ -n "${GITHUBBOT_TOKEN:-}" || -n "${GITHUBBOT_WEBHOOK_SECRET:-}" ]]; then
   require_env GITHUBBOT_WEBHOOK_SECRET
 fi
 
+# The Slack keys are optional as a group. A partial group would seed an empty
+# value. The script therefore stops here.
+if [[ -n "${SLACK_BOT_TOKEN:-}${SLACK_SIGNING_SECRET:-}" ]]; then
+  require_env SLACK_BOT_TOKEN
+  require_env SLACK_SIGNING_SECRET
+fi
+
 # Discord keys are optional as a group, but partial configuration would silently
 # seed empty values and crashloop the bot at deploy time instead of failing here.
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
@@ -193,9 +211,6 @@ delete_if_forced centaur-onepassword-connect-credentials
 if ! secret_exists centaur-infra-env; then
   require_env OP_SERVICE_ACCOUNT_TOKEN
   require_env OP_VAULT
-  require_env SLACK_BOT_TOKEN
-  require_env SLACK_SIGNING_SECRET
-  require_env SLACKBOT_API_KEY
 fi
 
 secret_key_present() {
@@ -215,6 +230,16 @@ if secret_exists centaur-infra-env; then
   # rotated; harmless when repoCache is disabled.
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     patch_data+=("\"GITHUB_TOKEN\":\"$(printf '%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')\"")
+  fi
+  # The Slack ingress keys. The script adds them when SLACK_BOT_TOKEN is set.
+  # Each run overwrites SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET. The script
+  # generates SLACKBOT_API_KEY once when it is absent.
+  if [[ -n "${SLACK_BOT_TOKEN:-}" ]]; then
+    patch_data+=("\"SLACK_BOT_TOKEN\":\"$(printf '%s' "$SLACK_BOT_TOKEN" | base64 | tr -d '\n')\"")
+    patch_data+=("\"SLACK_SIGNING_SECRET\":\"$(printf '%s' "$SLACK_SIGNING_SECRET" | base64 | tr -d '\n')\"")
+    if ! secret_key_present SLACKBOT_API_KEY; then
+      patch_data+=("\"SLACKBOT_API_KEY\":\"$(printf '%s' "${SLACKBOT_API_KEY:-$(rand_hex)}" | base64 | tr -d '\n')\"")
+    fi
   fi
   # Discord ingress (discordbot) keys: added when DISCORD_BOT_TOKEN is in the env. DISCORD_* are
   # overwritten on each run (so rotation works); DISCORDBOT_API_KEY is generated once if absent.
@@ -323,9 +348,6 @@ else
     --from-literal=IRON_MANAGEMENT_API_KEY="$(rand_hex)"
     --from-literal=OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN"
     --from-literal=OP_VAULT="$OP_VAULT"
-    --from-literal=SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN"
-    --from-literal=SLACK_SIGNING_SECRET="$SLACK_SIGNING_SECRET"
-    --from-literal=SLACKBOT_API_KEY="$SLACKBOT_API_KEY"
     --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
     --from-literal=DATABASE_URL="$DATABASE_URL"
     --from-literal=IRON_CONTROL_DATABASE_URL="$IRON_CONTROL_DATABASE_URL"
@@ -336,6 +358,13 @@ else
     --from-literal=IRON_CONTROL_SECRET_KEY_BASE="$(rand_hex)$(rand_hex)"
     --from-literal=CENTAUR_JWT_SIGNING_SECRET="$(rand_hex)$(rand_hex)"
   )
+  if [[ -n "${SLACK_BOT_TOKEN:-}" ]]; then
+    secret_args+=(
+      --from-literal=SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN"
+      --from-literal=SLACK_SIGNING_SECRET="$SLACK_SIGNING_SECRET"
+      --from-literal=SLACKBOT_API_KEY="${SLACKBOT_API_KEY:-$(rand_hex)}"
+    )
+  fi
   if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
     secret_args+=(
       --from-literal=DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN"
@@ -376,6 +405,10 @@ else
   fi
   kubectl "${secret_args[@]}" >/dev/null
   echo "Created Secret centaur-infra-env in namespace $NAMESPACE"
+fi
+
+if ! secret_key_present SLACK_BOT_TOKEN; then
+  echo "NOTE: Secret centaur-infra-env has no Slack keys. Deploy with slackbotv2.enabled=false. Set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET and run this script again to add the keys." >&2
 fi
 
 if secret_exists centaur-firewall-ca && secret_exists centaur-firewall-ca-key; then

@@ -20,6 +20,7 @@ jobs:
     runs-on: depot-ubuntu-24.04
     outputs:
       migration_order: ${{ steps.filter.outputs.migration_order }}
+      bootstrap_script_tests: ${{ steps.filter.outputs.bootstrap_script_tests }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
       harness_server_checks: ${{ steps.filter.outputs.harness_server_checks }}
       company_context_checks: ${{ steps.filter.outputs.company_context_checks }}
@@ -80,6 +81,10 @@ jobs:
             '^crates/centaur-session-sqlx/search-migrations/' \
             '^crates/centaur-console-db/migrations/' \
             '^\.github/scripts/check-migration-order\.sh$' \
+            '^\.github/workflows/ci\.yml$'
+          set_output bootstrap_script_tests \
+            '^contrib/scripts/bootstrap-k8s-secrets\.sh$' \
+            '^contrib/scripts/tests/' \
             '^\.github/workflows/ci\.yml$'
           set_output rust_checks \
             '^Cargo\.(toml|lock)$' \
@@ -187,6 +192,19 @@ jobs:
 
       - name: Check migration versions
         run: .github/scripts/check-migration-order.sh "origin/${{ github.base_ref || 'main' }}"
+
+  bootstrap-script-tests:
+    name: Bootstrap script tests
+    runs-on: depot-ubuntu-24.04
+    needs: ci_changes
+    if: needs.ci_changes.outputs.bootstrap_script_tests == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test
+        run: contrib/scripts/tests/test-bootstrap-k8s-secrets.sh
 
   rust-checks:
     name: Rust fmt and clippy
@@ -761,6 +779,7 @@ jobs:
     needs:
       - ci_changes
       - migration-order
+      - bootstrap-script-tests
       - rust-checks
       - harness-server-checks
       - harness-server-conformance
@@ -782,5 +801,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
-          allowed-skips: migration-order, rust-checks, harness-server-checks, harness-server-conformance, company-context-checks, proxy-sync-checks, token-broker-checks, rust-api, rust-api-postgres, sandbox-tests, workflow-python-tests, tool-tests, slackbotv2-tests, discordbot-checks, githubbot-checks, teamsbot-checks, connector-checks
+          allowed-skips: migration-order, bootstrap-script-tests, rust-checks, harness-server-checks, harness-server-conformance, company-context-checks, proxy-sync-checks, token-broker-checks, rust-api, rust-api-postgres, sandbox-tests, workflow-python-tests, tool-tests, slackbotv2-tests, discordbot-checks, githubbot-checks, teamsbot-checks, connector-checks
           jobs: ${{ toJSON(needs) }}

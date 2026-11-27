@@ -1,0 +1,68 @@
+#!/usr/bin/env -S python3 -I
+"""A fake kubectl for the bootstrap script tests.
+
+It keeps each Secret as a JSON file of base64 values in $FAKE_KUBE_STATE. It
+supports only the commands that bootstrap-k8s-secrets.sh runs.
+"""
+import base64
+import json
+import os
+import pathlib
+import sys
+
+state = pathlib.Path(os.environ["FAKE_KUBE_STATE"])
+state.mkdir(parents=True, exist_ok=True)
+args = sys.argv[1:]
+if args[:1] == ["-n"]:
+    args = args[2:]
+
+
+def path(name):
+    return state / f"{name}.json"
+
+
+def load(name):
+    return json.loads(path(name).read_text())
+
+
+def encode(value):
+    return base64.b64encode(value).decode()
+
+
+if args[:2] == ["create", "namespace"]:
+    print("apiVersion: v1\nkind: Namespace")
+elif args[:1] == ["apply"]:
+    sys.stdin.read()
+elif args[:2] == ["delete", "secret"]:
+    path(args[2]).unlink(missing_ok=True)
+elif args[:2] == ["get", "secret"]:
+    name = args[2]
+    if not path(name).exists():
+        print(f'Error from server (NotFound): secrets "{name}" not found', file=sys.stderr)
+        sys.exit(1)
+    if "-o" in args:
+        jsonpath = args[args.index("-o") + 1]
+        key = jsonpath.removeprefix("jsonpath={.data.").removesuffix("}")
+        sys.stdout.write(load(name).get(key, ""))
+elif args[:2] == ["patch", "secret"]:
+    name = args[2]
+    data = load(name)
+    data.update(json.loads(args[args.index("-p") + 1])["data"])
+    path(name).write_text(json.dumps(data))
+elif args[:3] == ["create", "secret", "generic"]:
+    name = args[3]
+    if path(name).exists():
+        print(f'Error from server (AlreadyExists): secrets "{name}" already exists', file=sys.stderr)
+        sys.exit(1)
+    data = {}
+    for arg in args[4:]:
+        if arg.startswith("--from-literal="):
+            key, value = arg.removeprefix("--from-literal=").split("=", 1)
+            data[key] = encode(value.encode())
+        elif arg.startswith("--from-file="):
+            key, file = arg.removeprefix("--from-file=").split("=", 1)
+            data[key] = encode(pathlib.Path(file).read_bytes())
+    path(name).write_text(json.dumps(data))
+else:
+    print(f"fake kubectl: unsupported command: {sys.argv[1:]}", file=sys.stderr)
+    sys.exit(2)
