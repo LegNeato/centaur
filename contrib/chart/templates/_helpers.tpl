@@ -83,6 +83,33 @@ the database endpoint can resolve to.
 {{- printf "%s-%s" (include "centaur.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- /*
+The ServiceAccount of the iron-proxy pods. Empty keeps the default
+ServiceAccount of the namespace.
+*/ -}}
+{{- define "centaur.ironProxyServiceAccountName" -}}
+{{- $serviceAccount := .Values.ironProxy.serviceAccount -}}
+{{- if $serviceAccount.create -}}
+{{- default (include "centaur.componentName" (dict "root" . "component" "iron-proxy")) $serviceAccount.name -}}
+{{- else -}}
+{{- $serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+Fails the render when the AWS settings do not fit the secret source.
+*/ -}}
+{{- define "centaur.validateIronProxySecretSource" -}}
+{{- $aws := .Values.ironProxy.awsSecretsManager -}}
+{{- if eq .Values.ironProxy.secretSource "aws-secrets-manager" -}}
+{{- if not $aws.region -}}
+{{- fail "ironProxy.secretSource=aws-secrets-manager requires ironProxy.awsSecretsManager.region" -}}
+{{- end -}}
+{{- else if $aws.vpcEndpointCidrs -}}
+{{- fail "ironProxy.awsSecretsManager.vpcEndpointCidrs requires ironProxy.secretSource=aws-secrets-manager" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "centaur.secretEnvName" -}}
 {{- required "secretManager.existingSecretName is required" .Values.secretManager.existingSecretName | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

@@ -14,8 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use centaur_iron_proxy::{
-    OnePasswordVault, PgDsnSetting, PgDsnSettingValueFrom, PostgresListener, ProxyFragment, Secret,
-    SecretReplace, SourcePolicy, pg_foreign_id,
+    AwsSecretsManager, OnePasswordVault, PgDsnSetting, PgDsnSettingValueFrom, PostgresListener,
+    ProxyFragment, Secret, SecretReplace, SourcePolicy, pg_foreign_id,
 };
 use serde_json::{Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
@@ -418,10 +418,10 @@ fn source_from_secret(
 }
 
 /// Resolve a placeholder into an iron-control source, honoring the deployment's
-/// [`SourcePolicy`] (env vs 1Password), mirroring how the proxy renderer
-/// resolves the same placeholder. Public so callers that build secret inputs
-/// from a source other than a fragment (e.g. a tool's ``pyproject.toml``)
-/// resolve ``secret_ref``s exactly as api-rs does.
+/// [`SourcePolicy`] (env, 1Password, or AWS Secrets Manager), mirroring how the
+/// proxy renderer resolves the same placeholder. Public so callers that build
+/// secret inputs from a source other than a fragment (e.g. a tool's
+/// ``pyproject.toml``) resolve ``secret_ref``s exactly as api-rs does.
 pub fn source_from_placeholder(
     policy: &SourcePolicy,
     placeholder: &str,
@@ -432,6 +432,9 @@ pub fn source_from_placeholder(
         SourcePolicy::OnePassword(vault) => ("1password", onepassword_config(vault, placeholder)),
         SourcePolicy::OnePasswordConnect(vault) => {
             ("1password_connect", onepassword_config(vault, placeholder))
+        }
+        SourcePolicy::AwsSecretsManager(aws) => {
+            ("aws_sm", aws_secrets_manager_config(aws, placeholder))
         }
     };
     insert_json_key(&mut config, json_key);
@@ -446,6 +449,14 @@ fn onepassword_config(vault: &OnePasswordVault, placeholder: &str) -> JsonValue 
     json!({
         "secret_ref": format!("op://{}/{placeholder}/credential", vault.name),
         "ttl": vault.ttl,
+    })
+}
+
+fn aws_secrets_manager_config(aws: &AwsSecretsManager, placeholder: &str) -> JsonValue {
+    json!({
+        "secret_id": aws.secret_id(placeholder),
+        "region": aws.region(),
+        "ttl": aws.ttl(),
     })
 }
 
@@ -1116,6 +1127,54 @@ transforms:
         assert_eq!(
             input.source.config,
             json!({ "secret_ref": "op://ai-agents/GITHUB_TOKEN/credential", "ttl": "10m" })
+        );
+    }
+
+    #[test]
+    fn aws_secrets_manager_policy_names_the_prefixed_secret() {
+        let fragment = load_fragment_str(
+            r#"
+transforms:
+  - name: secrets
+    config:
+      secrets:
+        - replace:
+            proxy_value: GITHUB_TOKEN
+            match_headers: ["Authorization"]
+          rules: [{ host: api.github.com }]
+"#,
+        )
+        .unwrap();
+        let aws = AwsSecretsManager::new("us-east-1", "centaur/", "10m").unwrap();
+        let policy = SourcePolicy::AwsSecretsManager(aws);
+        let inputs = secret_inputs_from_fragment("infra", &fragment, &policy).unwrap();
+        let SecretInput::Static(input) = &inputs[0] else {
+            panic!("expected a static secret");
+        };
+        assert_eq!(input.source.source_type, "aws_sm");
+        assert_eq!(
+            input.source.config,
+            json!({ "secret_id": "centaur/GITHUB_TOKEN", "region": "us-east-1", "ttl": "10m" })
+        );
+    }
+
+    #[test]
+    fn aws_secrets_manager_source_keeps_the_json_key() {
+        let aws = AwsSecretsManager::new("eu-west-1", "prod/", "5m").unwrap();
+        let source = source_from_placeholder(
+            &SourcePolicy::AwsSecretsManager(aws),
+            "WAREHOUSE_CREDENTIAL",
+            Some("password"),
+        );
+        assert_eq!(source.source_type, "aws_sm");
+        assert_eq!(
+            source.config,
+            json!({
+                "secret_id": "prod/WAREHOUSE_CREDENTIAL",
+                "region": "eu-west-1",
+                "ttl": "5m",
+                "json_key": "password",
+            })
         );
     }
 

@@ -19,8 +19,9 @@ onepassword or onepassword-connect):
   OP_SERVICE_ACCOUNT_TOKEN     the token of the 1Password service account. The
                                default ironProxy.secretSource=onepassword needs
                                it. It requires OP_VAULT. Each run overwrites it.
-                               Deploy with ironProxy.secretSource=env when the
-                               Secret has no 1Password token.
+                               Deploy with ironProxy.secretSource=env or
+                               aws-secrets-manager when the Secret has no
+                               1Password token.
   OP_VAULT                     the 1Password vault name or ID. A 1Password
                                token requires it when the Secret has no vault.
                                Each run overwrites it.
@@ -431,7 +432,7 @@ else
 fi
 
 if ! secret_key_present OP_SERVICE_ACCOUNT_TOKEN && ! secret_key_present OP_CONNECT_TOKEN; then
-  echo "NOTE: Secret centaur-infra-env has no 1Password token. Deploy with ironProxy.secretSource=env. Set OP_SERVICE_ACCOUNT_TOKEN and OP_VAULT and run this script again to add the keys." >&2
+  echo "NOTE: Secret centaur-infra-env has no 1Password token. Deploy with ironProxy.secretSource=env or aws-secrets-manager. Set OP_SERVICE_ACCOUNT_TOKEN and OP_VAULT and run this script again to add the keys." >&2
 fi
 if ! secret_key_present SLACK_BOT_TOKEN; then
   echo "NOTE: Secret centaur-infra-env has no Slack keys. Deploy with slackbotv2.enabled=false. Set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET and run this script again to add the keys." >&2

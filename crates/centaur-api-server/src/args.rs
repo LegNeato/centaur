@@ -22,8 +22,9 @@ use centaur_iron_control::{
     SessionRegistrar, register_role,
 };
 use centaur_iron_proxy::{
-    OnePasswordVault, ProxyFragment, SourceKind, SourcePolicy, bedrock_enabled,
-    custom_provider_auth_fragments, harness_auth_fragment, infra_fragment,
+    AwsSecretsManager, DEFAULT_AWS_SECRET_PREFIX, OnePasswordVault, ProxyFragment, SourceKind,
+    SourcePolicy, bedrock_enabled, custom_provider_auth_fragments, harness_auth_fragment,
+    infra_fragment,
 };
 use centaur_sandbox_agent_k8s::{
     AgentSandboxBackend, AgentSandboxConfig, DeploymentRef, GitHubTokenRef, IronControlSettings,
@@ -57,6 +58,8 @@ use crate::{
 const SANDBOX_REPOS_MOUNT_PATH: &str = "/home/agent/github";
 const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 const SLACK_BOT_TOKEN_ENV: &str = "SLACK_BOT_TOKEN";
+/// The region variable of the AWS SDK.
+const AWS_REGION_ENV: &str = "AWS_REGION";
 
 /// OTLP env always forwarded from the api-rs process into codex sandboxes,
 /// mirroring the Python control plane's `_SANDBOX_PASSTHROUGH_ENV_KEYS`. The
@@ -1235,7 +1238,7 @@ impl SandboxArgs {
     async fn iron_control_runtime(&self) -> Result<IronControlRuntime, ServerError> {
         let client = self.iron_control.required_client()?;
         if self.iron_control_sync_infra_secrets {
-            let policy = self.iron_proxy.source_policy();
+            let policy = self.iron_proxy.source_policy()?;
             let roles = self.iron_proxy.roles_to_register()?;
             for (spec, fragment) in &roles {
                 register_role_with_retry(&client, spec, fragment, &policy).await?;
@@ -2327,6 +2330,15 @@ struct IronProxyArgs {
         default_value_t = 5432
     )]
     database_port: u16,
+    /// Address ranges of the VPC endpoints of Secrets Manager and STS for the
+    /// aws-secrets-manager source. Per-sandbox iron-proxy NetworkPolicies
+    /// allow egress to them on port 443.
+    #[arg(
+        long = "kubernetes-iron-proxy-aws-endpoint-cidrs",
+        env = "KUBERNETES_IRON_PROXY_AWS_ENDPOINT_CIDRS",
+        value_delimiter = ','
+    )]
+    aws_endpoint_cidrs: Vec<String>,
     /// Per-sandbox iron-proxy container resources as a JSON Kubernetes
     /// `ResourceRequirements` object.
     #[arg(
@@ -2334,6 +2346,14 @@ struct IronProxyArgs {
         env = "KUBERNETES_IRON_PROXY_RESOURCES"
     )]
     resources_json: Option<String>,
+    /// The ServiceAccount of the per-sandbox iron-proxy pods. The AWS
+    /// identity of an AWS secret source comes from it. Unset keeps the
+    /// default ServiceAccount of the namespace.
+    #[arg(
+        long = "kubernetes-iron-proxy-service-account",
+        env = "KUBERNETES_IRON_PROXY_SERVICE_ACCOUNT"
+    )]
+    service_account: Option<String>,
     #[command(flatten)]
     ca: IronProxyCaArgs,
     #[command(flatten)]
@@ -2424,7 +2444,27 @@ impl IronProxyArgs {
         config.database_port = self.database_port;
         config.ssh = self.ssh_config()?;
 
-        self.source.apply_to_config(&mut config);
+        self.source.apply_to_config(&mut config)?;
+        config.aws_endpoint_cidrs = self
+            .aws_endpoint_cidrs
+            .iter()
+            .filter_map(|cidr| non_empty(Some(cidr.as_str())))
+            .map(|cidr| {
+                validate_cidr(cidr, "KUBERNETES_IRON_PROXY_AWS_ENDPOINT_CIDRS")?;
+                Ok(cidr.to_owned())
+            })
+            .collect::<Result<_, ServerError>>()?;
+        if !config.aws_endpoint_cidrs.is_empty()
+            && !matches!(config.source_policy, SourcePolicy::AwsSecretsManager(_))
+        {
+            return Err(ServerError::UnsupportedConfig(
+                "KUBERNETES_IRON_PROXY_AWS_ENDPOINT_CIDRS requires \
+                 FIREWALL_MANAGER_SECRET_SOURCE=aws-secrets-manager"
+                    .to_owned(),
+            ));
+        }
+        config.service_account_name =
+            non_empty(self.service_account.as_deref()).map(ToOwned::to_owned);
         config.fragments = harness_fragments;
         config.env_from_secret_names = self.env_from_secret_names();
         if let Some(labels) = self
@@ -2453,7 +2493,7 @@ impl IronProxyArgs {
         Ok(config)
     }
 
-    fn source_policy(&self) -> SourcePolicy {
+    fn source_policy(&self) -> Result<SourcePolicy, ServerError> {
         self.source.policy()
     }
 
@@ -2590,6 +2630,19 @@ struct IronProxySourceArgs {
     source: SourceKind,
     #[arg(long = "op-vault", env = "OP_VAULT", default_value = "ai-agents")]
     op_vault: String,
+    /// AWS region of the secrets. The aws-secrets-manager source requires it.
+    #[arg(
+        long = "kubernetes-firewall-manager-aws-region",
+        env = "FIREWALL_MANAGER_AWS_REGION"
+    )]
+    aws_region: Option<String>,
+    /// The text before the placeholder in the name of each AWS secret.
+    #[arg(
+        long = "kubernetes-firewall-manager-aws-secret-prefix",
+        env = "FIREWALL_MANAGER_AWS_SECRET_PREFIX",
+        default_value = DEFAULT_AWS_SECRET_PREFIX
+    )]
+    aws_secret_prefix: String,
     #[arg(
         long = "kubernetes-firewall-manager-secret-ttl",
         env = "FIREWALL_MANAGER_SECRET_TTL",
@@ -2614,17 +2667,40 @@ struct IronProxySourceArgs {
 }
 
 impl IronProxySourceArgs {
-    fn policy(&self) -> SourcePolicy {
+    fn policy(&self) -> Result<SourcePolicy, ServerError> {
         let vault = || OnePasswordVault::new(self.op_vault.clone(), self.secret_ttl.clone());
-        match self.source {
+        Ok(match self.source {
             SourceKind::Env => SourcePolicy::Env,
             SourceKind::OnePassword => SourcePolicy::OnePassword(vault()),
             SourceKind::OnePasswordConnect => SourcePolicy::OnePasswordConnect(vault()),
-        }
+            SourceKind::AwsSecretsManager => {
+                let region = non_empty(self.aws_region.as_deref()).ok_or_else(|| {
+                    ServerError::UnsupportedConfig(
+                        "FIREWALL_MANAGER_SECRET_SOURCE=aws-secrets-manager requires \
+                         FIREWALL_MANAGER_AWS_REGION"
+                            .to_owned(),
+                    )
+                })?;
+                let aws = AwsSecretsManager::new(
+                    region,
+                    self.aws_secret_prefix.clone(),
+                    self.secret_ttl.clone(),
+                )
+                .map_err(|error| ServerError::UnsupportedConfig(error.to_string()))?;
+                SourcePolicy::AwsSecretsManager(aws)
+            }
+        })
     }
 
-    fn apply_to_config(&self, config: &mut IronProxyConfig) {
-        config.source_policy = self.policy();
+    fn apply_to_config(&self, config: &mut IronProxyConfig) -> Result<(), ServerError> {
+        config.source_policy = self.policy()?;
+        // The AWS SDK of iron-proxy also needs the region for the STS call of
+        // a web identity.
+        if let SourcePolicy::AwsSecretsManager(aws) = &config.source_policy {
+            config
+                .extra_env
+                .insert(AWS_REGION_ENV.to_owned(), aws.region().to_owned());
+        }
         if let Some(app_name) = &self.op_connect_app_name {
             config.op_connect_app_name = app_name.clone();
         }
@@ -2639,6 +2715,7 @@ impl IronProxySourceArgs {
                 .extra_env
                 .insert("OP_CONNECT_HOST".to_owned(), host.clone());
         }
+        Ok(())
     }
 
     fn uses_bootstrap_secret(&self) -> bool {
@@ -4254,6 +4331,189 @@ mod tests {
                 "centaur-secret-env".to_owned()
             ]
         );
+    }
+
+    fn aws_source_args(extra: &[&str]) -> Args {
+        let mut argv = vec![
+            "centaur-api-server",
+            "--database-url",
+            "postgres://postgres:postgres@localhost/centaur",
+            "--kubernetes-firewall-ca-secret-name",
+            "centaur-firewall-ca",
+            "--kubernetes-firewall-ca-key-secret-name",
+            "centaur-firewall-ca-key",
+            "--kubernetes-firewall-manager-secret-source",
+            "aws-secrets-manager",
+            "--kubernetes-bootstrap-secret-name",
+            "centaur-infra-env",
+            "--kubernetes-secret-env-name",
+            "centaur-secret-env",
+        ];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).unwrap()
+    }
+
+    #[test]
+    fn aws_secret_source_configures_the_iron_proxy_pods() {
+        let args = aws_source_args(&[
+            "--kubernetes-firewall-manager-aws-region",
+            "us-east-1",
+            "--kubernetes-firewall-manager-aws-secret-prefix",
+            "prod/",
+            "--kubernetes-iron-proxy-service-account",
+            "centaur-iron-proxy",
+        ]);
+        let iron_proxy = &args.sandbox.iron_proxy;
+
+        let expected = SourcePolicy::AwsSecretsManager(
+            AwsSecretsManager::new("us-east-1", "prod/", "10m").unwrap(),
+        );
+        assert_eq!(iron_proxy.source_policy().unwrap(), expected);
+        let config = iron_proxy.to_config().unwrap();
+        assert_eq!(config.source_policy, expected);
+        assert_eq!(
+            config.extra_env.get(AWS_REGION_ENV).map(String::as_str),
+            Some("us-east-1")
+        );
+        assert_eq!(
+            config.service_account_name.as_deref(),
+            Some("centaur-iron-proxy")
+        );
+        // Only the env and 1Password sources read the bootstrap Secret.
+        assert_eq!(
+            iron_proxy.env_from_secret_names(),
+            vec!["centaur-secret-env".to_owned()]
+        );
+    }
+
+    #[test]
+    fn aws_secret_source_defaults_to_the_centaur_prefix() {
+        let args = aws_source_args(&["--kubernetes-firewall-manager-aws-region", "us-east-1"]);
+        let SourcePolicy::AwsSecretsManager(aws) = args.sandbox.iron_proxy.source_policy().unwrap()
+        else {
+            panic!("expected the AWS policy");
+        };
+        assert_eq!(aws.secret_id("OPENAI_API_KEY"), "centaur/OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn aws_secret_source_requires_a_region() {
+        for extra in [
+            &[][..],
+            &["--kubernetes-firewall-manager-aws-region", ""][..],
+        ] {
+            let args = aws_source_args(extra);
+            let error = args.sandbox.iron_proxy.to_config().unwrap_err();
+            assert!(
+                error.to_string().contains("FIREWALL_MANAGER_AWS_REGION"),
+                "{error}"
+            );
+            assert!(args.sandbox.iron_proxy.source_policy().is_err());
+        }
+    }
+
+    #[test]
+    fn aws_secret_source_rejects_an_invalid_prefix() {
+        let args = aws_source_args(&[
+            "--kubernetes-firewall-manager-aws-region",
+            "us-east-1",
+            "--kubernetes-firewall-manager-aws-secret-prefix",
+            "has space/",
+        ]);
+        assert!(args.sandbox.iron_proxy.to_config().is_err());
+    }
+
+    #[test]
+    fn aws_secret_source_reaches_the_configured_vpc_endpoints() {
+        let args = aws_source_args(&[
+            "--kubernetes-firewall-manager-aws-region",
+            "us-east-1",
+            "--kubernetes-iron-proxy-aws-endpoint-cidrs",
+            "10.0.8.0/24,,fd00:8::/64",
+        ]);
+        assert_eq!(
+            args.sandbox
+                .iron_proxy
+                .to_config()
+                .unwrap()
+                .aws_endpoint_cidrs,
+            vec!["10.0.8.0/24".to_owned(), "fd00:8::/64".to_owned()]
+        );
+    }
+
+    #[test]
+    fn aws_vpc_endpoints_must_be_cidrs() {
+        for invalid in ["vpce.example.com", "10.0.8.1", "10.0.8.0/40"] {
+            let args = aws_source_args(&[
+                "--kubernetes-firewall-manager-aws-region",
+                "us-east-1",
+                "--kubernetes-iron-proxy-aws-endpoint-cidrs",
+                invalid,
+            ]);
+            assert!(
+                args.sandbox.iron_proxy.to_config().is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn aws_vpc_endpoints_require_the_aws_secret_source() {
+        let args = Args::try_parse_from([
+            "centaur-api-server",
+            "--database-url",
+            "postgres://postgres:postgres@localhost/centaur",
+            "--kubernetes-firewall-ca-secret-name",
+            "centaur-firewall-ca",
+            "--kubernetes-firewall-ca-key-secret-name",
+            "centaur-firewall-ca-key",
+            "--kubernetes-firewall-manager-secret-source",
+            "env",
+            "--kubernetes-iron-proxy-aws-endpoint-cidrs",
+            "10.0.8.0/24",
+        ])
+        .unwrap();
+        let error = args.sandbox.iron_proxy.to_config().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("KUBERNETES_IRON_PROXY_AWS_ENDPOINT_CIDRS"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn iron_proxy_pods_keep_the_default_service_account_without_a_setting() {
+        let args = aws_source_args(&["--kubernetes-firewall-manager-aws-region", "us-east-1"]);
+        assert_eq!(
+            args.sandbox
+                .iron_proxy
+                .to_config()
+                .unwrap()
+                .service_account_name,
+            None
+        );
+    }
+
+    #[test]
+    fn env_secret_source_sets_no_aws_region() {
+        let args = Args::try_parse_from([
+            "centaur-api-server",
+            "--database-url",
+            "postgres://postgres:postgres@localhost/centaur",
+            "--kubernetes-firewall-ca-secret-name",
+            "centaur-firewall-ca",
+            "--kubernetes-firewall-ca-key-secret-name",
+            "centaur-firewall-ca-key",
+            "--kubernetes-firewall-manager-secret-source",
+            "env",
+            "--kubernetes-firewall-manager-aws-region",
+            "us-east-1",
+        ])
+        .unwrap();
+        let config = args.sandbox.iron_proxy.to_config().unwrap();
+        assert_eq!(config.source_policy, SourcePolicy::Env);
+        assert!(!config.extra_env.contains_key(AWS_REGION_ENV));
     }
 
     #[test]

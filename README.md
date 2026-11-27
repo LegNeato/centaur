@@ -129,7 +129,8 @@ export OP_VAULT=...
 Set `ironProxy.secretSource: env` in `contrib/chart/values.local.yaml` to read
 the credentials from the Kubernetes Secret instead.
 [Use Environment Variables](docs/pages/secrets/environment.mdx) describes that
-mode.
+mode. [Use AWS Secrets Manager](docs/pages/secrets/aws-secrets-manager.mdx)
+describes the AWS source.
 
 Export the credentials of the Slack app to boot the Slack ingress:
 

@@ -70,8 +70,9 @@ for `SLACK_SIGNING_SECRET`.
 
 `OP_SERVICE_ACCOUNT_TOKEN` and `OP_VAULT` let [iron-proxy](https://docs.iron.sh)
 resolve model and tool credentials through 1Password. The chart uses 1Password
-by default. [Use Environment Variables](/secrets/environment) describes a
-deployment without 1Password. The chart enables Slackbot by default. api-rs and
+by default. [Use Environment Variables](/secrets/environment) and
+[Use AWS Secrets Manager](/secrets/aws-secrets-manager) describe deployments
+without 1Password. The chart enables Slackbot by default. api-rs and
 Slackbot need the Slack keys to start while Slackbot is enabled. Set
 `slackbotv2.enabled: false` in a values file when you do not use Slack.
 `CENTAUR_EXTRA_VALUES` gives that file to `just deploy`.
