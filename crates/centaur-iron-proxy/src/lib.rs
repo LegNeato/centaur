@@ -13,7 +13,7 @@ pub use model::{
     ProxyFragment, SandboxEnv, Secret, SecretReplace, Transform, TransformConfig, pg_foreign_id,
     pg_sandbox_env_var,
 };
-pub use source::{SourceKind, SourcePolicy};
+pub use source::{OnePasswordVault, SourceKind, SourcePolicy};
 
 #[cfg(test)]
 mod tests;

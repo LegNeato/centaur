@@ -14,8 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use centaur_iron_proxy::{
-    PgDsnSetting, PgDsnSettingValueFrom, PostgresListener, ProxyFragment, Secret, SecretReplace,
-    SourceKind, SourcePolicy, pg_foreign_id,
+    OnePasswordVault, PgDsnSetting, PgDsnSettingValueFrom, PostgresListener, ProxyFragment, Secret,
+    SecretReplace, SourcePolicy, pg_foreign_id,
 };
 use serde_json::{Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
@@ -427,39 +427,26 @@ pub fn source_from_placeholder(
     placeholder: &str,
     json_key: Option<&str>,
 ) -> SecretSource {
-    match policy.kind {
-        SourceKind::Env => {
-            let mut config = json!({ "var": placeholder });
-            insert_json_key(&mut config, json_key);
-            SecretSource {
-                source_type: "env".to_owned(),
-                secret: None,
-                config,
-            }
+    let (source_type, mut config) = match policy {
+        SourcePolicy::Env => ("env", json!({ "var": placeholder })),
+        SourcePolicy::OnePassword(vault) => ("1password", onepassword_config(vault, placeholder)),
+        SourcePolicy::OnePasswordConnect(vault) => {
+            ("1password_connect", onepassword_config(vault, placeholder))
         }
-        SourceKind::OnePassword => onepassword_source("1password", policy, placeholder, json_key),
-        SourceKind::OnePasswordConnect => {
-            onepassword_source("1password_connect", policy, placeholder, json_key)
-        }
-    }
-}
-
-fn onepassword_source(
-    source_type: &str,
-    policy: &SourcePolicy,
-    placeholder: &str,
-    json_key: Option<&str>,
-) -> SecretSource {
-    let mut config = json!({
-        "secret_ref": format!("op://{}/{placeholder}/credential", policy.op_vault),
-        "ttl": policy.ttl,
-    });
+    };
     insert_json_key(&mut config, json_key);
     SecretSource {
         source_type: source_type.to_owned(),
         secret: None,
         config,
     }
+}
+
+fn onepassword_config(vault: &OnePasswordVault, placeholder: &str) -> JsonValue {
+    json!({
+        "secret_ref": format!("op://{}/{placeholder}/credential", vault.name),
+        "ttl": vault.ttl,
+    })
 }
 
 fn insert_json_key(config: &mut JsonValue, json_key: Option<&str>) {
@@ -991,7 +978,7 @@ mod tests {
     use centaur_iron_proxy::load_fragment_str;
 
     fn env_policy() -> SourcePolicy {
-        SourcePolicy::env()
+        SourcePolicy::Env
     }
 
     #[test]
@@ -1120,7 +1107,7 @@ transforms:
 "#,
         )
         .unwrap();
-        let policy = SourcePolicy::onepassword_connect("ai-agents", "10m");
+        let policy = SourcePolicy::OnePasswordConnect(OnePasswordVault::new("ai-agents", "10m"));
         let inputs = secret_inputs_from_fragment("infra", &fragment, &policy).unwrap();
         let SecretInput::Static(input) = &inputs[0] else {
             panic!("expected a static secret");
